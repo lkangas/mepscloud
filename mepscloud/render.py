@@ -28,6 +28,28 @@ from . import config, fetch
 # ~13.3km; pad a bit above that rather than clip real data.
 ALT_DISPLAY_MAX_M = 14000
 
+# ---------------------------------------------------------------------------
+# "combined" derived layer: a custom total-cloud rendering that (a) makes the
+# clear -> few-percent-cloud edge conspicuous and (b) colour-codes altitude.
+# Opacity = boosted transfer(total) (gamma < 1 lifts thin cloud). Hue = the
+# low/mid/high colours mixed weighted by each layer's fraction RAISED TO A
+# POWER, so the DOMINANT layer wins instead of everything averaging toward the
+# warm low colour (a flat average lets white high cloud never show). Chosen
+# by visual comparison (see session history): bright amber low, yellow mid,
+# white high, power 4, gamma 0.42.
+COMBINED_LOW_RGB = (255, 154, 46)    # #ff9a2e
+COMBINED_MID_RGB = (255, 225, 77)    # #ffe14d
+COMBINED_HIGH_RGB = (255, 255, 255)  # white
+COMBINED_POWER = 4.0
+COMBINED_GAMMA = 0.42
+COMBINED_DEAD = 0.01                 # <1% total reads as clear (fully transparent)
+COMBINED_INPUTS = (
+    "cloud_area_fraction",              # total (opacity)
+    "low_type_cloud_area_fraction",
+    "medium_type_cloud_area_fraction",
+    "high_type_cloud_area_fraction",
+)
+
 
 def _to_display_png(arr2d: np.ndarray, is_metres: bool) -> Image.Image:
     """quantized array -> north-up LA (luminance+alpha) PNG: white at an
@@ -41,6 +63,40 @@ def _to_display_png(arr2d: np.ndarray, is_metres: bool) -> Image.Image:
     la[..., 0] = 255       # constant white
     la[..., 1] = north_up  # alpha = cloudiness
     return Image.fromarray(la, mode="LA")
+
+
+def _combined_rgba(low, mid, high, total) -> np.ndarray:
+    """One timestep of the combined layer -> north-up RGBA uint8. Inputs are
+    uint8 (0-255) 2-D arrays, south->north (flipped at the end like _to_display_png)."""
+    lo = low.astype(np.float32) / 255.0
+    mi = mid.astype(np.float32) / 255.0
+    hi = high.astype(np.float32) / 255.0
+    tot = total.astype(np.float32) / 255.0
+    wl, wm, wh = lo ** COMBINED_POWER, mi ** COMBINED_POWER, hi ** COMBINED_POWER
+    s = wl + wm + wh + 1e-6
+    rgb = (wl[..., None] * np.array(COMBINED_LOW_RGB, np.float32)
+           + wm[..., None] * np.array(COMBINED_MID_RGB, np.float32)
+           + wh[..., None] * np.array(COMBINED_HIGH_RGB, np.float32)) / s[..., None]
+    t = np.clip((tot - COMBINED_DEAD) / (1 - COMBINED_DEAD), 0, 1)
+    alpha = t ** COMBINED_GAMMA
+    rgba = np.empty((*tot.shape, 4), dtype=np.uint8)
+    rgba[..., :3] = np.clip(rgb, 0, 255).astype(np.uint8)
+    rgba[..., 3] = np.clip(alpha * 255, 0, 255).astype(np.uint8)
+    return np.flipud(rgba)
+
+
+def _write_combined_frames(inputs: dict, out_dir: Path) -> Path:
+    """inputs maps COMBINED_INPUTS names -> full [t,ny,nx] uint8 arrays."""
+    var_dir = out_dir / "combined"
+    var_dir.mkdir(exist_ok=True)
+    total = inputs["cloud_area_fraction"]
+    low = inputs["low_type_cloud_area_fraction"]
+    mid = inputs["medium_type_cloud_area_fraction"]
+    high = inputs["high_type_cloud_area_fraction"]
+    for ti in range(total.shape[0]):
+        rgba = _combined_rgba(low[ti], mid[ti], high[ti], total[ti])
+        Image.fromarray(rgba, mode="RGBA").save(var_dir / f"{ti:03d}.png")
+    return var_dir
 
 
 def _frames_dir(run_time: dt.datetime) -> Path:
@@ -96,15 +152,22 @@ def render_latest_run(force: bool = False) -> dict:
 
         out_dir.mkdir(parents=True, exist_ok=True)
         layers = []
+        combined_inputs = {}  # kept in memory to build the derived layer after
         for name, quantized in fetch.iter_quantized_variables(ds):
             n_frames = quantized.shape[0]
             var_dir = _write_frames(name, quantized, out_dir)
             layers.append(name)
-            del quantized
+            if name in COMBINED_INPUTS:
+                combined_inputs[name] = quantized  # ~68MB uint8 each, 4 kept
+            else:
+                del quantized
             print(f"[render]   {name}: {n_frames} frames -> {var_dir}")
+        cdir = _write_combined_frames(combined_inputs, out_dir)
+        print(f"[render]   combined: {len(valid_times)} frames -> {cdir}")
     finally:
         ds.close()
 
+    layers = ["combined"] + layers  # derived layer first = viewer default
     manifest = _write_manifest(run_time, valid_times, x, y, layers)
     print(f"[render] wrote {config.CACHE_DIR / 'manifest.json'}")
     _prune_old_frame_dirs(keep=out_dir)
@@ -134,7 +197,10 @@ def render_from_npz(npz_path: Path, force: bool = True) -> dict:
             var_dir = _write_frames(name, z[name], out_dir)
             layers.append(name)
             print(f"[render]   {name}: {len(valid_times)} frames -> {var_dir}")
+        cdir = _write_combined_frames({k: z[k] for k in COMBINED_INPUTS}, out_dir)
+        print(f"[render]   combined: {len(valid_times)} frames -> {cdir}")
 
+    layers = ["combined"] + layers  # derived layer first = viewer default
     manifest = _write_manifest(run_time, valid_times, x, y, layers)
     print(f"[render] wrote {config.CACHE_DIR / 'manifest.json'}")
     _prune_old_frame_dirs(keep=out_dir)
