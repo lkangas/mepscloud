@@ -18,6 +18,14 @@
   .frame { position:relative; width:100%; border-radius:6px; overflow:hidden; background:#000; }
   .frame img { position:absolute; inset:0; width:100%; height:100%; display:block; }
   .frame .spacer { width:100%; aspect-ratio: 949 / 1069; }
+  #sea-layer, #land-layer { position:absolute; inset:0; }
+  /* land colour painted only where landmask.png is opaque; sea shows through
+     (incl. lakes, which are transparent in the mask) from #sea-layer behind */
+  #land-layer {
+    -webkit-mask-image: url(static/landmask.png); mask-image: url(static/landmask.png);
+    -webkit-mask-size: 100% 100%; mask-size: 100% 100%;
+    -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
+  }
   .controls { display:flex; align-items:center; gap:10px; margin-top:10px; flex-wrap:wrap; }
   .controls button { background:#21262d; color:var(--fg); border:1px solid var(--line);
                      border-radius:6px; padding:6px 10px; cursor:pointer; font-size:14px; }
@@ -41,27 +49,29 @@
   <section class="card map">
     <div class="frame" id="frame">
       <div class="spacer"></div>
-      <img id="basemap" src="static/basemap.png" alt="land/water basemap">
+      <div id="sea-layer"></div>
+      <div id="land-layer"></div>
       <img id="base" alt="cloud layer frame">
       <svg id="twilight" preserveAspectRatio="none" style="position:absolute; inset:0; width:100%; height:100%;"></svg>
-      <img class="road" id="road-unknown" src="static/roads_unknown.png" alt="minor roads">
-      <img class="road" id="road-road" src="static/roads_road.png" alt="roads">
-      <img class="road" id="road-secondary" src="static/roads_secondary.png" alt="secondary highways">
-      <img class="road" id="road-major" src="static/roads_major.png" alt="major highways">
+      <img id="roads" src="static/roads.png" alt="Finnish roads">
       <img id="overlay" src="static/overlay.png" alt="coastlines/borders">
     </div>
     <div class="controls">
       <label>layer <select id="layer"></select></label>
+      <label><input type="checkbox" id="showRoads" checked> roads</label>
       <label><input type="checkbox" id="showOverlay" checked> coastlines</label>
       <label><input type="checkbox" id="showTwilightShade" checked> sun shade</label>
       <label><input type="checkbox" id="showTwilightLines" checked> sun lines</label>
     </div>
     <div class="controls">
-      <span class="hint">roads:</span>
-      <label><input type="checkbox" class="road-toggle" data-road="major" checked> major</label>
-      <label><input type="checkbox" class="road-toggle" data-road="secondary" checked> secondary</label>
-      <label><input type="checkbox" class="road-toggle" data-road="road" checked> road</label>
-      <label><input type="checkbox" class="road-toggle" data-road="unknown"> unknown</label>
+      <label style="min-width:52px">sea</label>
+      <input type="range" id="seaShade" min="0" max="0" value="0">
+      <span class="timelabel" id="seaHex" style="min-width:80px; text-align:left">—</span>
+    </div>
+    <div class="controls">
+      <label style="min-width:52px">land</label>
+      <input type="range" id="landShade" min="0" max="0" value="0">
+      <span class="timelabel" id="landHex" style="min-width:80px; text-align:left">—</span>
     </div>
     <div class="controls">
       <button id="play" title="Play/pause">▶</button>
@@ -86,6 +96,32 @@ const base = $('base'), overlay = $('overlay'), slider = $('slider'), timeEl = $
 const layerSelect = $('layer');
 const twilightSvg = $('twilight');
 let manifest = null, idx = 0, playing = false, timer = null;
+
+// --- land/sea colour selectors (dev tuning) -----------------------------
+// Scroll each slider through the palette; the map recolours live.
+const SEA_SHADES = [
+  '#04070d', '#07111f', '#0b1d3a', '#10294d', '#163a63',
+  '#1c4a78', '#245f92', '#2f77ad', '#4a90c4', '#68a8d6', '#8fc0e6',
+];
+const LAND_SHADES = [
+  '#0e130d', '#161f13', '#1c2b1e', '#25301c', '#2b2a19',
+  '#39401f', '#3d3524', '#4a5a2e', '#574328', '#5f7338',
+  '#6f5636', '#7d9448', '#8a6a42', '#9db35f', '#b08a54', '#c7cf8f',
+];
+
+function initShadeSelector(sliderId, hexId, palette, layerEl, startHex) {
+  const s = $(sliderId), hex = $(hexId);
+  s.max = palette.length - 1;
+  let start = palette.indexOf(startHex);
+  s.value = start >= 0 ? start : Math.floor(palette.length / 2);
+  const apply = () => {
+    const c = palette[+s.value];
+    layerEl.style.backgroundColor = c;
+    hex.textContent = `${+s.value + 1}/${palette.length}  ${c}`;
+  };
+  s.oninput = apply;
+  apply();
+}
 
 // fillAlpha values are a first guess, meant to be tuned visually: each
 // depression level's "beyond this point" disk is stacked as its own layer
@@ -197,6 +233,7 @@ $('play').onclick = togglePlay;
 $('prev').onclick = () => { if (playing) togglePlay(); step(-1); };
 $('next').onclick = () => { if (playing) togglePlay(); step(1); };
 layerSelect.onchange = () => show(idx);
+$('showRoads').onchange = e => { $('roads').style.display = e.target.checked ? 'block' : 'none'; };
 $('showOverlay').onchange = e => { overlay.style.display = e.target.checked ? 'block' : 'none'; };
 $('showTwilightShade').onchange = e => {
   const d = e.target.checked ? 'inline' : 'none';
@@ -206,11 +243,8 @@ $('showTwilightLines').onchange = e => {
   const d = e.target.checked ? 'inline' : 'none';
   TWILIGHT_BANDS.forEach(b => $('twi-line-' + b.depression).style.display = d);
 };
-document.querySelectorAll('.road-toggle').forEach(cb => {
-  const apply = () => { $('road-' + cb.dataset.road).style.display = cb.checked ? 'block' : 'none'; };
-  cb.onchange = apply;
-  apply();  // honour initial checked state (unknown starts off)
-});
+initShadeSelector('seaShade', 'seaHex', SEA_SHADES, $('sea-layer'), '#0b1d3a');
+initShadeSelector('landShade', 'landHex', LAND_SHADES, $('land-layer'), '#1c2b1e');
 document.addEventListener('keydown', e => {
   if (e.key === 'ArrowLeft') { if (playing) togglePlay(); step(-1); }
   if (e.key === 'ArrowRight') { if (playing) togglePlay(); step(1); }

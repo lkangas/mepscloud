@@ -46,12 +46,14 @@ PX = 72.0 / DPI  # matplotlib-points per output pixel
 LINE_PX = 1 * PX
 ROAD_COLOR = "#ffd27f"
 
-# (class name, filename, alpha) in draw/legend order (brightest first).
+# All road classes render into ONE roads.png (single viewer toggle); class is
+# conveyed by alpha. (class name, alpha), dimmest first so the brighter major
+# roads paint on top at junctions.
 ROAD_CLASSES = [
-    ("Major Highway",     "roads_major.png",     1.00),
-    ("Secondary Highway", "roads_secondary.png", 0.60),
-    ("Road",              "roads_road.png",      0.35),
-    ("Unknown",           "roads_unknown.png",   0.35),
+    ("Unknown",           0.25),
+    ("Road",              0.25),
+    ("Secondary Highway", 0.50),
+    ("Major Highway",     1.00),
 ]
 FINLAND_BBOX = (19, 59, 32, 70.6)  # quick prefilter before the polygon clip
 
@@ -163,12 +165,14 @@ def main():
         STATIC / "overlay.png", nx, ny, extent,
     )
 
-    print("[overlay] roads (one PNG per class, clipped to Finland, ferries dropped)...")
+    print("[overlay] roads (merged into one PNG, clipped to Finland, ferries dropped)...")
     by_class = road_lines_by_class(FINLAND_BBOX)
-    for cls, fname, alpha in ROAD_CLASSES:
+    road_layers = []
+    for cls, alpha in ROAD_CLASSES:
         lines = by_class[cls]
         print(f"[overlay]   {cls}: {len(lines)} segments (alpha {alpha})")
-        render_png([(lines, ROAD_COLOR, LINE_PX, alpha)], STATIC / fname, nx, ny, extent)
+        road_layers.append((lines, ROAD_COLOR, LINE_PX, alpha))
+    render_png(road_layers, STATIC / "roads.png", nx, ny, extent)
 
 
 if __name__ == "__main__":

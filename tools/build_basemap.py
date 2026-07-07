@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""One-off: render a filled land/water basemap PNG at the exact pixel grid
-of the MEPS native domain (same approach as build_coastline_overlay.py --
-see that file for why this only runs here, not in the production pipeline).
+"""One-off: render a LAND MASK PNG at the exact pixel grid of the MEPS native
+domain (same approach/why as build_coastline_overlay.py).
 
-Land polygons + lakes (punched back to water colour) from Natural Earth,
-projected with the same confirmed native transform used everywhere else in
-this repo, so it's pixel-perfect under the coastline overlay and cloud
-frames without any scaling/alignment math in the browser.
+Output is web/static/landmask.png: white (opaque) over land, transparent
+over sea and lakes, anti-aliased at the coast. The viewer colours the map in
+two independently-selectable parts: a full-bleed sea-colour background with
+this mask painted over it in a land colour (via CSS mask-image). Lakes read
+as sea because they're transparent in the mask. This lets both land and sea
+shades be tuned live in the browser without regenerating anything.
 
 Usage (from the WSL venv that has cartopy/pyproj installed):
     python tools/build_basemap.py
@@ -26,18 +27,14 @@ from matplotlib.path import Path as MplPath
 from matplotlib.patches import PathPatch
 import cartopy.io.shapereader as shpreader
 from pyproj import Transformer
+from PIL import Image
 
-from mepscloud import config, fetch
-
-OUT = Path(__file__).resolve().parent.parent / "web" / "static" / "basemap.png"
-
-# Placeholder palette -- tuning pass comes later, once this is composited
-# with real (transparent-clear) cloud frames in the viewer.
-WATER = "#0b1d3a"
-LAND = "#1c2b1e"
+OUT = Path(__file__).resolve().parent.parent / "web" / "static" / "landmask.png"
+DPI = 100
 
 
 def native_polygons(category: str, name: str, resolution: str = "50m"):
+    from mepscloud import config
     reader = shpreader.Reader(shpreader.natural_earth(resolution=resolution, category=category, name=name))
     to_native = Transformer.from_crs("EPSG:4326", config.NATIVE_PROJ4, always_xy=True)
     paths = []
@@ -50,8 +47,6 @@ def native_polygons(category: str, name: str, resolution: str = "50m"):
 
 
 def _polygon_to_path(poly, transformer) -> MplPath:
-    """Exterior + interior rings (holes) as one compound Path, so lakes /
-    enclosed seas render as holes rather than needing separate fill calls."""
     vertices, codes = [], []
     for ring in [poly.exterior, *poly.interiors]:
         lon, lat = np.asarray(ring.coords).T
@@ -63,6 +58,7 @@ def _polygon_to_path(poly, transformer) -> MplPath:
 
 
 def main():
+    from mepscloud import fetch
     run_path = fetch.latest_cached_run_path()
     if run_path is None:
         raise SystemExit("no cached run npz found -- need real x/y arrays to size this exactly")
@@ -70,37 +66,42 @@ def main():
         x, y = z["x"], z["y"]
     nx, ny = len(x), len(y)
     extent = [x.min(), x.max(), y.min(), y.max()]
-    print(f"[basemap] grid {nx}x{ny}, extent={extent}")
+    print(f"[landmask] grid {nx}x{ny}, extent={extent}")
 
-    print("[basemap] projecting land polygons...")
+    print("[landmask] projecting land polygons...")
     land_paths = native_polygons("physical", "land")
-    print(f"[basemap] projecting lakes (finer 10m -- Finland is lake-dense)...")
+    print("[landmask] projecting lakes (finer 10m -- Finland is lake-dense)...")
     lake_paths = native_polygons("physical", "lakes", resolution="10m")
 
-    dpi = 100
-    fig = plt.figure(figsize=(nx / dpi, ny / dpi), dpi=dpi)
+    # Render land white / lakes black on a black background (opaque), so the
+    # resulting luminance is exactly the land coverage (with anti-aliased
+    # coasts). Then turn that luminance into the alpha of a white image ->
+    # a clean land mask that keeps soft edges. (Can't punch transparent holes
+    # for lakes directly -- drawing "transparent" over white erases nothing --
+    # so go via luminance-on-black instead.)
+    fig = plt.figure(figsize=(nx / DPI, ny / DPI), dpi=DPI)
     ax = fig.add_axes([0, 0, 1, 1])
     ax.set_xlim(extent[0], extent[1])
     ax.set_ylim(extent[2], extent[3])
     ax.set_axis_off()
-    ax.set_facecolor(WATER)
-    fig.patch.set_facecolor(WATER)
-
+    ax.set_facecolor("black")
+    fig.patch.set_facecolor("black")
     for path in land_paths:
-        ax.add_patch(PathPatch(path, facecolor=LAND, edgecolor="none"))
+        ax.add_patch(PathPatch(path, facecolor="white", edgecolor="none"))
     for path in lake_paths:
-        ax.add_patch(PathPatch(path, facecolor=WATER, edgecolor="none"))
+        ax.add_patch(PathPatch(path, facecolor="black", edgecolor="none"))
 
+    fig.canvas.draw()
+    rgb = np.asarray(fig.canvas.buffer_rgba())[..., :3]
+    plt.close(fig)
+    lum = rgb.mean(axis=2).astype(np.uint8)  # 255 = land, 0 = sea/lake
+
+    mask = np.zeros((*lum.shape, 4), dtype=np.uint8)
+    mask[..., :3] = 255      # white
+    mask[..., 3] = lum       # alpha = land coverage
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    # savefig's facecolor defaults to the *figure's* facecolor at save time
-    # regardless of ax.set_facecolor() -- pass it explicitly too, or the
-    # background comes out white.
-    fig.savefig(OUT, dpi=dpi, facecolor=WATER)  # opaque -- this is the bottom layer
-    print(f"[basemap] wrote {OUT}")
-
-    from PIL import Image
-    im = Image.open(OUT)
-    print(f"[basemap] PNG size: {im.size} (grid was {nx}x{ny})")
+    Image.fromarray(mask, mode="RGBA").save(OUT)
+    print(f"[landmask] wrote {OUT}  size={Image.open(OUT).size} (grid was {nx}x{ny})")
 
 
 if __name__ == "__main__":
