@@ -42,9 +42,14 @@ ALT_DISPLAY_MAX_M = 14000
 # averaging toward the warm low colour (a flat average lets white high cloud
 # never show). Chosen by visual comparison (see session history): bright amber
 # low, yellow mid, white high, power 4, gamma 0.42.
-COMBINED_LOW_RGB = (255, 154, 46)    # #ff9a2e
-COMBINED_MID_RGB = (255, 225, 77)    # #ffe14d
+# Fog (surface obscuration) is a distinct phenomenon from the layered cloud
+# bands, so it gets a cool violet off the warm altitude ramp -- it's the
+# "total but no low/mid/high band" cloud (confirmed ~100% fog), astronomy-
+# relevant, and would otherwise be invisible.
+COMBINED_LOW_RGB = (255, 154, 46)    # #ff9a2e amber
+COMBINED_MID_RGB = (255, 225, 77)    # #ffe14d yellow
 COMBINED_HIGH_RGB = (255, 255, 255)  # white
+COMBINED_FOG_RGB = (155, 107, 208)   # #9b6bd0 violet
 COMBINED_POWER = 4.0
 COMBINED_GAMMA = 0.42
 COMBINED_DEAD = 0.01                 # <1% coverage reads as clear (fully transparent)
@@ -52,6 +57,7 @@ COMBINED_INPUTS = (
     "low_type_cloud_area_fraction",
     "medium_type_cloud_area_fraction",
     "high_type_cloud_area_fraction",
+    "fog_area_fraction",
 )
 
 
@@ -69,19 +75,22 @@ def _to_display_png(arr2d: np.ndarray, is_metres: bool) -> Image.Image:
     return Image.fromarray(la, mode="LA")
 
 
-def _combined_rgba(low, mid, high) -> np.ndarray:
-    """One timestep of the combined layer -> north-up RGBA uint8, built only
-    from the three altitude bands. Inputs are uint8 (0-255) 2-D arrays,
-    south->north (flipped at the end like _to_display_png)."""
+def _combined_rgba(low, mid, high, fog) -> np.ndarray:
+    """One timestep of the combined layer -> north-up RGBA uint8, built from
+    the three altitude bands plus surface fog. Inputs are uint8 (0-255) 2-D
+    arrays, south->north (flipped at the end like _to_display_png)."""
     lo = low.astype(np.float32) / 255.0
     mi = mid.astype(np.float32) / 255.0
     hi = high.astype(np.float32) / 255.0
-    wl, wm, wh = lo ** COMBINED_POWER, mi ** COMBINED_POWER, hi ** COMBINED_POWER
-    s = wl + wm + wh + 1e-6
+    fo = fog.astype(np.float32) / 255.0
+    wl, wm, wh, wf = (lo ** COMBINED_POWER, mi ** COMBINED_POWER,
+                      hi ** COMBINED_POWER, fo ** COMBINED_POWER)
+    s = wl + wm + wh + wf + 1e-6
     rgb = (wl[..., None] * np.array(COMBINED_LOW_RGB, np.float32)
            + wm[..., None] * np.array(COMBINED_MID_RGB, np.float32)
-           + wh[..., None] * np.array(COMBINED_HIGH_RGB, np.float32)) / s[..., None]
-    coverage = 1.0 - (1.0 - lo) * (1.0 - mi) * (1.0 - hi)  # random-overlap total from bands
+           + wh[..., None] * np.array(COMBINED_HIGH_RGB, np.float32)
+           + wf[..., None] * np.array(COMBINED_FOG_RGB, np.float32)) / s[..., None]
+    coverage = 1.0 - (1.0 - lo) * (1.0 - mi) * (1.0 - hi) * (1.0 - fo)  # random-overlap
     t = np.clip((coverage - COMBINED_DEAD) / (1 - COMBINED_DEAD), 0, 1)
     alpha = t ** COMBINED_GAMMA
     rgba = np.empty((*lo.shape, 4), dtype=np.uint8)
@@ -97,8 +106,9 @@ def _write_combined_frames(inputs: dict, out_dir: Path) -> Path:
     low = inputs["low_type_cloud_area_fraction"]
     mid = inputs["medium_type_cloud_area_fraction"]
     high = inputs["high_type_cloud_area_fraction"]
+    fog = inputs["fog_area_fraction"]
     for ti in range(low.shape[0]):
-        rgba = _combined_rgba(low[ti], mid[ti], high[ti])
+        rgba = _combined_rgba(low[ti], mid[ti], high[ti], fog[ti])
         Image.fromarray(rgba, mode="RGBA").save(var_dir / f"{ti:03d}.png")
     return var_dir
 

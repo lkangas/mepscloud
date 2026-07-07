@@ -43,6 +43,7 @@ CLOUD_VARS_FRACTION = (
     "low_type_cloud_area_fraction",     # LCC
     "medium_type_cloud_area_fraction",  # MCC
     "high_type_cloud_area_fraction",    # HCC
+    "fog_area_fraction",                # surface fog (the "total but no band" cloud)
     "convective_cloud_area_fraction",   # CCC -- units are % unlike the rest, normalised on fetch
     "cloud_binary_mask",
 )
