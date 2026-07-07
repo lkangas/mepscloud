@@ -51,10 +51,11 @@
       <div class="spacer"></div>
       <div id="sea-layer"></div>
       <div id="land-layer"></div>
+      <svg id="twilight-shade" preserveAspectRatio="none" style="position:absolute; inset:0; width:100%; height:100%;"></svg>
       <img id="base" alt="cloud layer frame">
-      <svg id="twilight" preserveAspectRatio="none" style="position:absolute; inset:0; width:100%; height:100%;"></svg>
       <img id="roads" src="static/roads.png" alt="Finnish roads">
       <img id="overlay" src="static/overlay.png" alt="coastlines/borders">
+      <svg id="twilight-lines" preserveAspectRatio="none" style="position:absolute; inset:0; width:100%; height:100%;"></svg>
     </div>
     <div class="controls">
       <label>layer <select id="layer"></select></label>
@@ -81,10 +82,8 @@
       <span class="timelabel" id="time">—</span>
     </div>
     <div class="hint">drag to scrub forecast time · ← / → keys step · toggle layers to compare</div>
-    <div class="hint">sun elevation contours: <span style="color:#ffca28">0°</span> ·
-      <span style="color:#ff9800">-6° civil</span> ·
-      <span style="color:#f4511e">-12° nautical</span> ·
-      <span style="color:#8e24aa">-18° astronomical</span></div>
+    <div class="hint">sun elevation contours (dark grey lines): 0° horizon · -6° civil ·
+      -12° nautical · -18° astronomical · shade deepens each band</div>
     <div class="err" id="err"></div>
   </section>
 </main>
@@ -94,7 +93,8 @@
 const $ = id => document.getElementById(id);
 const base = $('base'), overlay = $('overlay'), slider = $('slider'), timeEl = $('time');
 const layerSelect = $('layer');
-const twilightSvg = $('twilight');
+const twilightShadeSvg = $('twilight-shade');  // below clouds
+const twilightLinesSvg = $('twilight-lines');  // on top
 let manifest = null, idx = 0, playing = false, timer = null;
 
 // --- land/sea colour selectors (dev tuning) -----------------------------
@@ -133,17 +133,20 @@ function initShadeSelector(sliderId, hexId, palette, layerEl, startHex) {
 // out of ONE shared stack, rather than needing separate above/below-cloud
 // layers at different alphas.
 const TWILIGHT_BANDS = [
-  { depression: 0, color: '#ffca28', dash: 'none', fillAlpha: 0.16 },
-  { depression: 6, color: '#ff9800', dash: '6,4', fillAlpha: 0.12 },
-  { depression: 12, color: '#f4511e', dash: '3,4', fillAlpha: 0.12 },
-  { depression: 18, color: '#8e24aa', dash: '1,4', fillAlpha: 0.14 },
+  { depression: 0, fillAlpha: 0.16 },
+  { depression: 6, fillAlpha: 0.12 },
+  { depression: 12, fillAlpha: 0.12 },
+  { depression: 18, fillAlpha: 0.14 },
 ];
 const TWILIGHT_FILL_COLOR = '#000000';
+const TWILIGHT_LINE_COLOR = '#333333';  // dark grey, all solid, 1.5px
 
 function initTwilightSvg(grid) {
-  twilightSvg.setAttribute('viewBox', `0 0 ${grid.nx} ${grid.ny}`);
-  twilightSvg.innerHTML = '';
-  // fills first (painted below), line contours on top of them
+  // shade fills go in the below-clouds SVG; line contours in the on-top SVG
+  twilightShadeSvg.setAttribute('viewBox', `0 0 ${grid.nx} ${grid.ny}`);
+  twilightLinesSvg.setAttribute('viewBox', `0 0 ${grid.nx} ${grid.ny}`);
+  twilightShadeSvg.innerHTML = '';
+  twilightLinesSvg.innerHTML = '';
   for (const band of TWILIGHT_BANDS) {
     const fill = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     fill.setAttribute('id', 'twi-fill-' + band.depression);
@@ -151,18 +154,17 @@ function initTwilightSvg(grid) {
     fill.setAttribute('fill-rule', 'evenodd');
     fill.setAttribute('fill-opacity', String(band.fillAlpha));
     fill.setAttribute('stroke', 'none');
-    twilightSvg.appendChild(fill);
+    twilightShadeSvg.appendChild(fill);
   }
   for (const band of TWILIGHT_BANDS) {
     const line = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     line.setAttribute('id', 'twi-line-' + band.depression);
     line.setAttribute('fill', 'none');
-    line.setAttribute('stroke', band.color);
-    line.setAttribute('stroke-width', '2');
-    line.setAttribute('stroke-dasharray', band.dash);
+    line.setAttribute('stroke', TWILIGHT_LINE_COLOR);
+    line.setAttribute('stroke-width', '1.5');
     line.setAttribute('opacity', '0.85');
     line.setAttribute('vector-effect', 'non-scaling-stroke');
-    twilightSvg.appendChild(line);
+    twilightLinesSvg.appendChild(line);
   }
 }
 
@@ -243,8 +245,8 @@ $('showTwilightLines').onchange = e => {
   const d = e.target.checked ? 'inline' : 'none';
   TWILIGHT_BANDS.forEach(b => $('twi-line-' + b.depression).style.display = d);
 };
-initShadeSelector('seaShade', 'seaHex', SEA_SHADES, $('sea-layer'), '#0b1d3a');
-initShadeSelector('landShade', 'landHex', LAND_SHADES, $('land-layer'), '#1c2b1e');
+initShadeSelector('seaShade', 'seaHex', SEA_SHADES, $('sea-layer'), '#245f92');   // 7/11
+initShadeSelector('landShade', 'landHex', LAND_SHADES, $('land-layer'), '#5f7338'); // 10/16
 document.addEventListener('keydown', e => {
   if (e.key === 'ArrowLeft') { if (playing) togglePlay(); step(-1); }
   if (e.key === 'ArrowRight') { if (playing) togglePlay(); step(1); }
