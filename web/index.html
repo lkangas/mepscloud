@@ -44,6 +44,10 @@
       <img id="basemap" src="static/basemap.png" alt="land/water basemap">
       <img id="base" alt="cloud layer frame">
       <svg id="twilight" preserveAspectRatio="none" style="position:absolute; inset:0; width:100%; height:100%;"></svg>
+      <img class="road" id="road-unknown" src="static/roads_unknown.png" alt="minor roads">
+      <img class="road" id="road-road" src="static/roads_road.png" alt="roads">
+      <img class="road" id="road-secondary" src="static/roads_secondary.png" alt="secondary highways">
+      <img class="road" id="road-major" src="static/roads_major.png" alt="major highways">
       <img id="overlay" src="static/overlay.png" alt="coastlines/borders">
     </div>
     <div class="controls">
@@ -51,6 +55,13 @@
       <label><input type="checkbox" id="showOverlay" checked> coastlines</label>
       <label><input type="checkbox" id="showTwilightShade" checked> sun shade</label>
       <label><input type="checkbox" id="showTwilightLines" checked> sun lines</label>
+    </div>
+    <div class="controls">
+      <span class="hint">roads:</span>
+      <label><input type="checkbox" class="road-toggle" data-road="major" checked> major</label>
+      <label><input type="checkbox" class="road-toggle" data-road="secondary" checked> secondary</label>
+      <label><input type="checkbox" class="road-toggle" data-road="road" checked> road</label>
+      <label><input type="checkbox" class="road-toggle" data-road="unknown"> unknown</label>
     </div>
     <div class="controls">
       <button id="play" title="Play/pause">▶</button>
@@ -195,6 +206,11 @@ $('showTwilightLines').onchange = e => {
   const d = e.target.checked ? 'inline' : 'none';
   TWILIGHT_BANDS.forEach(b => $('twi-line-' + b.depression).style.display = d);
 };
+document.querySelectorAll('.road-toggle').forEach(cb => {
+  const apply = () => { $('road-' + cb.dataset.road).style.display = cb.checked ? 'block' : 'none'; };
+  cb.onchange = apply;
+  apply();  // honour initial checked state (unknown starts off)
+});
 document.addEventListener('keydown', e => {
   if (e.key === 'ArrowLeft') { if (playing) togglePlay(); step(-1); }
   if (e.key === 'ArrowRight') { if (playing) togglePlay(); step(1); }
