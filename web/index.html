@@ -51,7 +51,18 @@
   .box.s1 { background:#d0a030; }   /* fetched */
   .box.s2 { background:#3fb950; }   /* processed / ready */
   .status-log { margin-top:6px; color:var(--muted); font-size:10px;
-                font-variant-numeric:tabular-nums; line-height:1.5; }
+                font-variant-numeric:tabular-nums; line-height:1.5; cursor:pointer; }
+  .status-log:hover { color:var(--fg); text-decoration:underline; }
+  .modal { position:fixed; inset:0; background:rgba(0,0,0,.6); display:flex;
+           align-items:center; justify-content:center; z-index:100; }
+  .modal[hidden] { display:none; }
+  .modal-box { background:var(--panel); border:1px solid var(--line); border-radius:8px;
+               max-width:min(720px,92vw); max-height:80vh; display:flex; flex-direction:column; }
+  .modal-hdr { display:flex; justify-content:space-between; align-items:center;
+               padding:8px 12px; border-bottom:1px solid var(--line); font-size:13px; }
+  .modal-hdr button { background:none; border:none; color:var(--fg); cursor:pointer; font-size:15px; }
+  .modal-box pre { margin:0; padding:12px; overflow:auto; font-size:11px; line-height:1.5;
+                   color:var(--fg); white-space:pre; }
   .menu { position:relative; }
   .menu > summary { list-style:none; cursor:pointer; background:#21262d; color:var(--fg);
     border:1px solid var(--line); border-radius:6px; padding:6px 10px; font-size:13px; user-select:none; }
@@ -100,6 +111,13 @@
     <div class="err" id="err"></div>
   </section>
 </main>
+
+<div id="logModal" class="modal" hidden>
+  <div class="modal-box">
+    <div class="modal-hdr"><span>Processing log</span><button id="logClose" title="Close">✕</button></div>
+    <pre id="logPre"></pre>
+  </div>
+</div>
 
 <script src="static/twilight.js"></script>
 <script>
@@ -343,15 +361,26 @@ function renderStatus(data) {
     }
     runEl.appendChild(grid);
     const log = document.createElement('div'); log.className = 'status-log';
+    log.title = 'click for the full processing log';
     for (const ev of (run.events || [])) {
       const line = document.createElement('div');
       line.textContent = fmtClock(ev.at) + ' · ' + ev.label;
       log.appendChild(line);
     }
+    log.onclick = openLog;
     runEl.appendChild(log);
     el.appendChild(runEl);
   }
 }
+function openLog() {
+  fetch('/cache/log.txt?_=' + Date.now())
+    .then(r => r.ok ? r.text() : '(no log yet)')
+    .then(t => { $('logPre').textContent = t.trimEnd() || '(log is empty)'; $('logModal').hidden = false; })
+    .catch(() => { $('logPre').textContent = '(log unavailable)'; $('logModal').hidden = false; });
+}
+$('logClose').onclick = () => { $('logModal').hidden = true; };
+$('logModal').onclick = e => { if (e.target === $('logModal')) $('logModal').hidden = true; };
+document.addEventListener('keydown', e => { if (e.key === 'Escape') $('logModal').hidden = true; });
 function pollStatus() {
   fetch('/cache/status.json?_=' + Date.now())
     .then(r => r.ok ? r.json() : null).then(d => { if (d) renderStatus(d); }).catch(() => {});

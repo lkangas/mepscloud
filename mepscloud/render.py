@@ -70,6 +70,47 @@ def _now() -> str:
     return dt.datetime.now(dt.UTC).isoformat()
 
 
+try:
+    from zoneinfo import ZoneInfo
+    _LOCAL_TZ = ZoneInfo(config.LOCAL_TZ)
+except Exception:  # pragma: no cover - missing tzdata
+    _LOCAL_TZ = None
+
+
+def _local_stamp() -> str:
+    """'YYYY-MM-DD HH:MM:SS EEST' in Finnish local time for the log file."""
+    now = dt.datetime.now(dt.UTC)
+    if _LOCAL_TZ is not None:
+        loc = now.astimezone(_LOCAL_TZ)
+        return loc.strftime("%Y-%m-%d %H:%M:%S ") + loc.tzname()
+    return now.strftime("%Y-%m-%d %H:%M:%SZ")
+
+
+LOG_PATH = None  # set lazily to config.CACHE_DIR / "log.txt"
+_LOG_MAX_LINES = 500
+
+
+def _log_file() -> Path:
+    return config.CACHE_DIR / "log.txt"
+
+
+def log_line(msg: str):
+    """Append a timestamped line to the cumulative processing log (cache/
+    log.txt), which the viewer shows when the status log is clicked."""
+    config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    with _log_file().open("a", encoding="utf-8") as f:
+        f.write(f"{_local_stamp()}  {msg}\n")
+
+
+def _trim_log():
+    p = _log_file()
+    if not p.exists():
+        return
+    lines = p.read_text(encoding="utf-8").splitlines()
+    if len(lines) > _LOG_MAX_LINES:
+        p.write_text("\n".join(lines[-_LOG_MAX_LINES:]) + "\n", encoding="utf-8")
+
+
 def _prev_status_runs(new_run_utc: str) -> list:
     """Runs from the existing status.json that are NOT the run about to be
     processed -- i.e. the previous (already-ready) run, to keep visible during
@@ -107,21 +148,33 @@ class _Status:
         # handover; cleared once this run finishes (mark_done) so the old run
         # then disappears (its frames are pruned at the same point).
         self.prev_runs = list(prev_runs or [])
+        _trim_log()
+        short = self.run_utc.replace("+00:00", "Z")
+        log_line(f"run {short}: init available"
+                 + (f" (handover; previous {prev_runs[0]['run_utc'].replace('+00:00','Z')} still live)"
+                    if prev_runs else ""))
 
     def mark_fetched(self, product: str):
         self.states[product] = [max(s, 1) for s in self.states[product]]
         self.fetched_at[product] = _now()
+        if product in config.CLOUD_VARS:
+            log_line(f"  fetched {product}")
         # fetching = downloading the raw MEPS vars (combined is derived, not
         # fetched); complete once every raw var is in.
         if not self._fetch_done and all(self.fetched_at[p] for p in config.CLOUD_VARS):
             self._fetch_done = True
             self.events.append({"label": "fetch complete", "at": _now()})
+            log_line("fetch complete — all variables downloaded")
 
     def mark_processed(self, product: str, ti: int):
         self.states[product][ti] = 2
 
+    def log_processed(self, product: str):
+        log_line(f"  processed {product} ({self.n_frames} frames)")
+
     def mark_done(self):
         self.events.append({"label": "processing complete", "at": _now()})
+        log_line(f"run {self.run_utc.replace('+00:00', 'Z')}: processing complete — ready")
         self.prev_runs = []  # this run is ready; the old one is dropped now
 
     def _current(self) -> dict:
@@ -275,6 +328,7 @@ def render_latest_run(force: bool = False) -> dict:
             var_dir = _write_frames(name, quantized, out_dir,
                                     on_frame=lambda ti, n=name: (status.mark_processed(n, ti), status.write_throttled()))
             status.write()
+            status.log_processed(name)
             layers.append(name)
             if name in COMBINED_INPUTS:
                 combined_inputs[name] = quantized  # ~68MB uint8 each, 4 kept
@@ -285,6 +339,7 @@ def render_latest_run(force: bool = False) -> dict:
         status.write()
         cdir = _write_combined_frames(combined_inputs, out_dir,
                                       on_frame=lambda ti: (status.mark_processed("combined", ti), status.write_throttled()))
+        status.log_processed("combined")
         status.mark_done()
         status.write()
         print(f"[render]   combined: {len(valid_times)} frames -> {cdir}")
@@ -325,12 +380,14 @@ def render_from_npz(npz_path: Path, force: bool = True) -> dict:
             var_dir = _write_frames(name, z[name], out_dir,
                                     on_frame=lambda ti, n=name: (status.mark_processed(n, ti), status.write_throttled()))
             status.write()
+            status.log_processed(name)
             layers.append(name)
             print(f"[render]   {name}: {len(valid_times)} frames -> {var_dir}")
         status.mark_fetched("combined")
         status.write()
         cdir = _write_combined_frames({k: z[k] for k in COMBINED_INPUTS}, out_dir,
                                       on_frame=lambda ti: (status.mark_processed("combined", ti), status.write_throttled()))
+        status.log_processed("combined")
         status.mark_done()
         status.write()
         print(f"[render]   combined: {len(valid_times)} frames -> {cdir}")
@@ -349,3 +406,4 @@ def _prune_old_frame_dirs(keep: Path):
     for p in frames_root.iterdir():
         if p.is_dir() and p != keep:
             shutil.rmtree(p, ignore_errors=True)
+            log_line(f"deleted handed-over run {p.name}")
