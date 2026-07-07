@@ -9,11 +9,7 @@
   * { box-sizing: border-box; }
   body { margin:0; background:var(--bg); color:var(--fg);
          font:14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
-  header { padding:14px 18px; border-bottom:1px solid var(--line); }
-  header h1 { margin:0; font-size:16px; font-weight:600; }
-  header .sub { color:var(--muted); font-size:12px; margin-top:2px; }
-  main { display:flex; flex-wrap:wrap; gap:18px; padding:18px; align-items:flex-start; }
-  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  main { padding:8px; }
   .map { width:640px; max-width:96vw; }
   .frame { position:relative; width:100%; border-radius:6px; overflow:hidden; background:#000; }
   .frame img { position:absolute; inset:0; width:100%; height:100%; display:block; }
@@ -26,7 +22,7 @@
     -webkit-mask-size: 100% 100%; mask-size: 100% 100%;
     -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
   }
-  .controls { display:flex; align-items:center; gap:10px; margin-top:10px; flex-wrap:wrap; }
+  .controls { display:flex; align-items:center; gap:8px; margin-top:8px; flex-wrap:wrap; }
   .controls button { background:#21262d; color:var(--fg); border:1px solid var(--line);
                      border-radius:6px; padding:6px 10px; cursor:pointer; font-size:14px; }
   .controls button:hover { background:#2d333b; }
@@ -40,19 +36,23 @@
            padding:6px 8px; font-size:13px; }
   input[type=range] { flex:1; min-width:200px; accent-color:var(--accent); }
   .timelabel { font-variant-numeric:tabular-nums; min-width:160px; text-align:right; color:var(--muted); }
-  .hint { color:var(--muted); font-size:12px; }
-  .err { color:#ff7b72; font-size:12px; }
+  .err { color:#ff7b72; font-size:12px; margin-top:8px; }
   label { font-size:12px; color:var(--muted); }
+  .runinfo { color:var(--muted); font-size:11px; margin-top:12px; }
+  .menu { position:relative; }
+  .menu > summary { list-style:none; cursor:pointer; background:#21262d; color:var(--fg);
+    border:1px solid var(--line); border-radius:6px; padding:6px 10px; font-size:13px; user-select:none; }
+  .menu > summary::-webkit-details-marker { display:none; }
+  .menu[open] > summary { background:#2d333b; }
+  .menu-body { position:absolute; z-index:20; top:100%; left:0; margin-top:4px;
+    background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:8px 10px;
+    display:flex; flex-direction:column; gap:8px; white-space:nowrap; }
+  .menu-body label { display:flex; align-items:center; gap:6px; }
 </style>
 </head>
 <body>
-<header>
-  <h1>MEPS cloud forecast <span class="hint">— dev viewer (basemap + clouds + coastlines, colours WIP)</span></h1>
-  <div class="sub" id="runinfo">loading…</div>
-</header>
-
 <main>
-  <section class="card map">
+  <section class="map">
     <div class="frame" id="frame">
       <div class="spacer"></div>
       <div id="sea-layer"></div>
@@ -64,14 +64,16 @@
       <img id="overlay" src="static/overlay.png" alt="coastlines/borders">
     </div>
     <div class="controls">
-      <span class="hint">layer:</span>
       <div id="layerButtons" class="seg"></div>
-    </div>
-    <div class="controls">
-      <label><input type="checkbox" id="showRoads" checked> roads</label>
-      <label><input type="checkbox" id="showOverlay" checked> coastlines</label>
-      <label><input type="checkbox" id="showTwilightShade" checked> sun shade</label>
-      <label><input type="checkbox" id="showTwilightLines" checked> sun lines</label>
+      <details class="menu">
+        <summary>Overlays ▾</summary>
+        <div class="menu-body">
+          <label><input type="checkbox" id="showRoads" checked> roads</label>
+          <label><input type="checkbox" id="showOverlay" checked> coastlines</label>
+          <label><input type="checkbox" id="showTwilightShade" checked> sun shade</label>
+          <label><input type="checkbox" id="showTwilightLines" checked> sun lines</label>
+        </div>
+      </details>
     </div>
     <div class="controls">
       <button id="play" title="Play/pause">▶</button>
@@ -80,9 +82,7 @@
       <input id="slider" type="range" min="0" max="0" value="0">
       <span class="timelabel" id="time">—</span>
     </div>
-    <div class="hint">drag to scrub forecast time · ← / → keys step · toggle layers to compare</div>
-    <div class="hint">sun elevation contours (dark grey lines): 0° horizon · -6° civil ·
-      -12° nautical · -18° astronomical · shade deepens each band</div>
+    <div id="runinfo" class="runinfo">loading…</div>
     <div class="err" id="err"></div>
   </section>
 </main>
