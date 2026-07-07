@@ -29,12 +29,19 @@ from mepscloud import config, fetch
 OUT = Path(__file__).resolve().parent.parent / "web" / "static" / "overlay.png"
 
 
-def native_lines(category: str, name: str):
-    reader = shpreader.Reader(shpreader.natural_earth(resolution="50m", category=category, name=name))
+def native_lines(category: str, name: str, resolution: str = "50m", bbox=None):
+    """bbox = (lon_min, lat_min, lon_max, lat_max), filters by centroid --
+    used for roads (a much denser global dataset) to skip projecting/plotting
+    the ~56k features nowhere near our domain."""
+    reader = shpreader.Reader(shpreader.natural_earth(resolution=resolution, category=category, name=name))
     to_native = Transformer.from_crs("EPSG:4326", config.NATIVE_PROJ4, always_xy=True)
     lines = []
     for rec in reader.records():
         geom = rec.geometry
+        if bbox is not None:
+            c = geom.centroid
+            if not (bbox[0] <= c.x <= bbox[2] and bbox[1] <= c.y <= bbox[3]):
+                continue
         parts = geom.geoms if hasattr(geom, "geoms") else [geom]
         for part in parts:
             lon, lat = np.asarray(part.coords).T
@@ -56,9 +63,14 @@ def main():
     extent = [x.min(), x.max(), y.min(), y.max()]
     print(f"[overlay] grid {nx}x{ny}, extent={extent}")
 
-    print("[overlay] projecting coastlines/borders into native x/y...")
+    print("[overlay] projecting coastlines/borders/roads into native x/y...")
     coast = native_lines("physical", "coastline")
     borders = native_lines("cultural", "admin_0_boundary_lines_land")
+    # generous bbox around the full map domain (not just Finland) so Norway/
+    # Sweden/Baltic roads that happen to be in view come along too -- Natural
+    # Earth's roads dataset is global, ~56k features, so always filter it.
+    roads = native_lines("cultural", "roads", resolution="10m", bbox=(-20, 49, 56, 76))
+    print(f"[overlay]   {len(coast)} coastline, {len(borders)} border, {len(roads)} road segments")
 
     dpi = 100
     fig = plt.figure(figsize=(nx / dpi, ny / dpi), dpi=dpi)
@@ -68,10 +80,12 @@ def main():
     ax.set_axis_off()
     fig.patch.set_alpha(0)
     ax.patch.set_alpha(0)
+    for xs, ys in roads:
+        ax.plot(xs, ys, color="#e0c080", lw=0.5, solid_capstyle="round", alpha=0.8, zorder=1)
     for xs, ys in coast:
-        ax.plot(xs, ys, color="#00e5ff", lw=0.8, solid_capstyle="round")
+        ax.plot(xs, ys, color="#00e5ff", lw=0.8, solid_capstyle="round", zorder=2)
     for xs, ys in borders:
-        ax.plot(xs, ys, color="#ffee00", lw=0.5, solid_capstyle="round")
+        ax.plot(xs, ys, color="#ffee00", lw=0.5, solid_capstyle="round", zorder=2)
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(OUT, dpi=dpi, transparent=True)

@@ -119,3 +119,33 @@ function twilightContourSegments(date, depressionDeg, grid, nSamples = 180) {
   if (current.length > 1) segments.push(current);
   return segments;
 }
+
+// Full (unbroken, clamped) loop for FILLING rather than stroking: the
+// "beyond this depression" disk boundary, as one closed point list. Used
+// with fill-rule=evenodd against the viewport rectangle (see index.html)
+// so the browser's own rasterizer computes "inside viewport but outside
+// this disk" = the dark region, without hand-rolled polygon clipping.
+// Points near the Lambert projection's high-distortion region (see
+// twilightContourSegments) are clamped to a large-but-finite value rather
+// than broken into segments -- evenodd only cares about crossings near the
+// (tiny, by comparison) viewport, so a coarse clamp far outside it doesn't
+// affect correctness there, and a clamped-but-closed loop is what evenodd
+// fill needs.
+function twilightFillLoop(date, depressionDeg, grid, nSamples = 180) {
+  const sub = subsolarPoint(date);
+  const radius = 90 + depressionDeg;
+  const CLAMP = 1e6;
+  const pts = [];
+  for (let i = 0; i < nSamples; i++) {
+    const bearing = (i / nSamples) * 2 * Math.PI;
+    const { lat, lon } = destPoint(sub.lat, sub.lon, radius, bearing);
+    const [x, y] = PROJ.forward(lat, lon);
+    let [px, py] = toPixel(x, y, grid);
+    if (!Number.isFinite(px)) px = 0;
+    if (!Number.isFinite(py)) py = 0;
+    px = Math.max(-CLAMP, Math.min(CLAMP, px));
+    py = Math.max(-CLAMP, Math.min(CLAMP, py));
+    pts.push([px, py]);
+  }
+  return pts;
+}
