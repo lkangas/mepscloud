@@ -15,11 +15,16 @@ services:
     container_name: clouds-updater
     restart: unless-stopped
     working_dir: /app
+    # Run as the host user (lauri = uid 1000 on petzval) so web/cache is
+    # host-owned, not root -- lets git pull / manual cleanup work.
+    user: "1000:1000"
     # Bind-mount the whole repo so Caddy serves web/ (with the updater's
     # web/cache output) from the host, and code updates are a git pull away.
     volumes:
       - ..:/app
     # Bursty ~3-min render every ~3h; cap memory so a surprise can't starve
-    # the sensor-platform stack sharing this box (peak is ~300MB in practice).
-    mem_limit: 1g
+    # the sensor-platform stack sharing this box. Measured peak on petzval is
+    # ~1.35 GB (the whole-variable OPeNDAP fetch spikes there); 2g gives
+    # margin. TODO: chunk the fetch per timestep to drop peak below ~200 MB.
+    mem_limit: 2g
     command: ["python", "update.py"]
