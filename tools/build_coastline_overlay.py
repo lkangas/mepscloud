@@ -42,9 +42,11 @@ PX = 72.0 / DPI  # matplotlib-points per output pixel
 
 # All map lines are 1px (matching the coastline weight); road class is
 # conveyed by BRIGHTNESS (alpha) instead of width -- major brightest, then
-# incrementally dimmer. Same warm tone for all; colour is a later tuning pass.
+# incrementally dimmer.
 LINE_PX = 1 * PX
-ROAD_COLOR = "#ffd27f"
+ROAD_COLOR = "#a8742e"      # darker warm tone (was #ffd27f)
+COAST_COLOR = "#2ec4b6"     # teal -- coastline + borders share it
+BORDER_COLOR = "#2ec4b6"
 
 # All road classes render into ONE roads.png (single viewer toggle); class is
 # conveyed by alpha. (class name, alpha), dimmest first so the brighter major
@@ -161,7 +163,7 @@ def main():
     coast = native_lines("physical", "coastline")
     borders = native_lines("cultural", "admin_0_boundary_lines_land")
     render_png(
-        [(coast, "#00e5ff", LINE_PX, 1.0), (borders, "#ffee00", LINE_PX, 1.0)],
+        [(coast, COAST_COLOR, LINE_PX, 1.0), (borders, BORDER_COLOR, LINE_PX, 1.0)],
         STATIC / "overlay.png", nx, ny, extent,
     )
 
