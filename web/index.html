@@ -212,7 +212,7 @@ function fmtHelsinki(validIso) {
   const asUTC = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute);
   const offH = Math.round((asUTC - utcDate.getTime()) / 3600000);
   const tag = offH === 3 ? 'EEST' : 'EET';
-  return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute} ${tag}`;
+  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute} ${tag}`;
 }
 
 function show(i) {
