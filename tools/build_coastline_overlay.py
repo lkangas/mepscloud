@@ -44,9 +44,9 @@ PX = 72.0 / DPI  # matplotlib-points per output pixel
 # conveyed by BRIGHTNESS (alpha) instead of width -- major brightest, then
 # incrementally dimmer.
 LINE_PX = 1 * PX
-ROAD_COLOR = "#a8742e"      # darker warm tone (was #ffd27f)
-COAST_COLOR = "#2ec4b6"     # teal -- coastline + borders share it
+COAST_COLOR = "#2ec4b6"     # teal -- coastline, borders, and roads all share it
 BORDER_COLOR = "#2ec4b6"
+ROAD_COLOR = "#2ec4b6"      # teal (roads differentiate by alpha, not colour)
 
 # All road classes render into ONE roads.png (single viewer toggle); class is
 # conveyed by alpha. (class name, alpha), dimmest first so the brighter major
