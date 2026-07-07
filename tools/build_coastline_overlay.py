@@ -40,14 +40,18 @@ STATIC = Path(__file__).resolve().parent.parent / "web" / "static"
 DPI = 100
 PX = 72.0 / DPI  # matplotlib-points per output pixel
 
-# Road classes to split into separate toggleable PNGs, in draw/legend order
-# (most to least prominent), with per-class line width IN PIXELS + a starting
-# colour. All the same warm tone for now -- colour tuning is a later pass.
+# All map lines are 1px (matching the coastline weight); road class is
+# conveyed by BRIGHTNESS (alpha) instead of width -- major brightest, then
+# incrementally dimmer. Same warm tone for all; colour is a later tuning pass.
+LINE_PX = 1 * PX
+ROAD_COLOR = "#ffd27f"
+
+# (class name, filename, alpha) in draw/legend order (brightest first).
 ROAD_CLASSES = [
-    ("Major Highway",     "roads_major.png",     3 * PX, "#e8b060"),
-    ("Secondary Highway", "roads_secondary.png", 2 * PX, "#e0c080"),
-    ("Road",              "roads_road.png",      1 * PX, "#d8c8a0"),
-    ("Unknown",           "roads_unknown.png",   1 * PX, "#c8c0a8"),
+    ("Major Highway",     "roads_major.png",     1.00),
+    ("Secondary Highway", "roads_secondary.png", 0.60),
+    ("Road",              "roads_road.png",      0.35),
+    ("Unknown",           "roads_unknown.png",   0.35),
 ]
 FINLAND_BBOX = (19, 59, 32, 70.6)  # quick prefilter before the polygon clip
 
@@ -119,7 +123,7 @@ def _project(part, to_native):
 
 
 def render_png(layers, out_path, nx, ny, extent):
-    """layers = [(lines, color, lw), ...]; drawn in order (first = bottom)."""
+    """layers = [(lines, color, lw, alpha), ...]; drawn in order (first = bottom)."""
     fig = plt.figure(figsize=(nx / DPI, ny / DPI), dpi=DPI)
     ax = fig.add_axes([0, 0, 1, 1])
     ax.set_xlim(extent[0], extent[1])
@@ -127,9 +131,9 @@ def render_png(layers, out_path, nx, ny, extent):
     ax.set_axis_off()
     fig.patch.set_alpha(0)
     ax.patch.set_alpha(0)
-    for lines, color, lw in layers:
+    for lines, color, lw, alpha in layers:
         for xs, ys in lines:
-            ax.plot(xs, ys, color=color, lw=lw, solid_capstyle="round")
+            ax.plot(xs, ys, color=color, lw=lw, alpha=alpha, solid_capstyle="round")
     fig.savefig(out_path, dpi=DPI, transparent=True)
     plt.close(fig)
     from PIL import Image
@@ -155,16 +159,16 @@ def main():
     coast = native_lines("physical", "coastline")
     borders = native_lines("cultural", "admin_0_boundary_lines_land")
     render_png(
-        [(coast, "#00e5ff", 0.8), (borders, "#ffee00", 0.5)],
+        [(coast, "#00e5ff", LINE_PX, 1.0), (borders, "#ffee00", LINE_PX, 1.0)],
         STATIC / "overlay.png", nx, ny, extent,
     )
 
     print("[overlay] roads (one PNG per class, clipped to Finland, ferries dropped)...")
     by_class = road_lines_by_class(FINLAND_BBOX)
-    for cls, fname, lw, color in ROAD_CLASSES:
+    for cls, fname, alpha in ROAD_CLASSES:
         lines = by_class[cls]
-        print(f"[overlay]   {cls}: {len(lines)} segments")
-        render_png([(lines, color, lw)], STATIC / fname, nx, ny, extent)
+        print(f"[overlay]   {cls}: {len(lines)} segments (alpha {alpha})")
+        render_png([(lines, ROAD_COLOR, LINE_PX, alpha)], STATIC / fname, nx, ny, extent)
 
 
 if __name__ == "__main__":
