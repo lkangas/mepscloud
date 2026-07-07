@@ -1,0 +1,25 @@
+# Updater for the MEPS cloud app. Fetches + renders the newest MEPS run on a
+# poll loop (update.py), writing frames/manifest.json/status.json/log.txt into
+# web/cache. The weather Caddy (in ~/weather, this repo's sibling wx repo)
+# serves web/ at weather.defocus.fi/clouds/ via a read-only bind mount.
+#
+# Deploy target: petzval, own directory ~/clouds/repo (this repo, cloned).
+# Isolated from ~/sensor-platform and ~/weather. Run from this deploy/ dir:
+#   docker compose up -d --build
+services:
+  updater:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: mepscloud-updater
+    container_name: clouds-updater
+    restart: unless-stopped
+    working_dir: /app
+    # Bind-mount the whole repo so Caddy serves web/ (with the updater's
+    # web/cache output) from the host, and code updates are a git pull away.
+    volumes:
+      - ..:/app
+    # Bursty ~3-min render every ~3h; cap memory so a surprise can't starve
+    # the sensor-platform stack sharing this box (peak is ~300MB in practice).
+    mem_limit: 1g
+    command: ["python", "update.py"]
