@@ -256,6 +256,26 @@ document.addEventListener('keydown', e => {
   if (e.key === 'ArrowRight') { if (playing) togglePlay(); step(1); }
 });
 
+// When the Custom layer is active, tint the L/M/H/Fog buttons with the
+// colours those layers get in the combined render -- a live legend.
+// (bg, fg) must match render.py's COMBINED_*_RGB.
+const COMBINED_LEGEND = {
+  low_type_cloud_area_fraction:    { bg: '#ff9a2e', fg: '#3a2600' },
+  medium_type_cloud_area_fraction: { bg: '#ffe14d', fg: '#3a3200' },
+  high_type_cloud_area_fraction:   { bg: '#ffffff', fg: '#222222' },
+  fog_area_fraction:               { bg: '#9b6bd0', fg: '#ffffff' },
+};
+function updateLayerLegend() {
+  const on = currentLayer === 'combined';
+  const btns = [...layerButtons.children];
+  for (const [layer, c] of Object.entries(COMBINED_LEGEND)) {
+    const btn = btns.find(b => b.dataset.layer === layer);
+    if (!btn || btn.classList.contains('active')) { if (btn) { btn.style.backgroundColor=''; btn.style.color=''; } continue; }
+    btn.style.backgroundColor = on ? c.bg : '';
+    btn.style.color = on ? c.fg : '';
+  }
+}
+
 fetch('/cache/manifest.json').then(r => { if (!r.ok) throw new Error('no manifest'); return r.json(); })
   .then(man => {
     manifest = man;
@@ -273,10 +293,12 @@ fetch('/cache/manifest.json').then(r => { if (!r.ok) throw new Error('no manifes
       btn.onclick = () => {
         currentLayer = layer;
         [...layerButtons.children].forEach(b => b.classList.toggle('active', b === btn));
+        updateLayerLegend();
         show(idx);
       };
       layerButtons.appendChild(btn);
     }
+    updateLayerLegend();
     show(0);
   })
   .catch(e => { $('err').textContent = 'No data yet, or manifest fetch failed: ' + e.message; });
