@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MEPS cloud forecast — dev viewer</title>
+<style>
+  :root { --bg:#0d1117; --panel:#161b22; --fg:#e6edf3; --muted:#9aa7b4; --accent:#e23b3b; --line:#30363d; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  header { padding:14px 18px; border-bottom:1px solid var(--line); }
+  header h1 { margin:0; font-size:16px; font-weight:600; }
+  header .sub { color:var(--muted); font-size:12px; margin-top:2px; }
+  main { display:flex; flex-wrap:wrap; gap:18px; padding:18px; align-items:flex-start; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  .map { width:640px; max-width:96vw; }
+  .frame { position:relative; width:100%; border-radius:6px; overflow:hidden; background:#000; }
+  .frame img { position:absolute; inset:0; width:100%; height:100%; display:block; }
+  .frame .spacer { width:100%; aspect-ratio: 949 / 1069; }
+  .controls { display:flex; align-items:center; gap:10px; margin-top:10px; flex-wrap:wrap; }
+  .controls button { background:#21262d; color:var(--fg); border:1px solid var(--line);
+                     border-radius:6px; padding:6px 10px; cursor:pointer; font-size:14px; }
+  .controls button:hover { background:#2d333b; }
+  select { background:#21262d; color:var(--fg); border:1px solid var(--line); border-radius:6px;
+           padding:6px 8px; font-size:13px; }
+  input[type=range] { flex:1; min-width:200px; accent-color:var(--accent); }
+  .timelabel { font-variant-numeric:tabular-nums; min-width:160px; text-align:right; color:var(--muted); }
+  .hint { color:var(--muted); font-size:12px; }
+  .err { color:#ff7b72; font-size:12px; }
+  label { font-size:12px; color:var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>MEPS cloud forecast <span class="hint">— dev viewer (raw frames, no basemap chrome yet)</span></h1>
+  <div class="sub" id="runinfo">loading…</div>
+</header>
+
+<main>
+  <section class="card map">
+    <div class="frame" id="frame">
+      <div class="spacer"></div>
+      <img id="base" alt="cloud layer frame">
+      <img id="overlay" src="static/overlay.png" alt="coastlines/borders">
+    </div>
+    <div class="controls">
+      <label>layer <select id="layer"></select></label>
+      <label><input type="checkbox" id="showOverlay" checked> coastlines</label>
+    </div>
+    <div class="controls">
+      <button id="play" title="Play/pause">▶</button>
+      <button id="prev" title="Previous (←)">⟨</button>
+      <button id="next" title="Next (→)">⟩</button>
+      <input id="slider" type="range" min="0" max="0" value="0">
+      <span class="timelabel" id="time">—</span>
+    </div>
+    <div class="hint">drag to scrub forecast time · ← / → keys step · toggle layers to compare</div>
+    <div class="err" id="err"></div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const base = $('base'), overlay = $('overlay'), slider = $('slider'), timeEl = $('time');
+const layerSelect = $('layer');
+let manifest = null, idx = 0, playing = false, timer = null;
+
+const LAYER_LABEL = {
+  cloud_area_fraction: 'Total cloud',
+  low_type_cloud_area_fraction: 'Low cloud',
+  medium_type_cloud_area_fraction: 'Mid cloud',
+  high_type_cloud_area_fraction: 'High cloud',
+  convective_cloud_area_fraction: 'Convective cloud',
+  cloud_binary_mask: 'Cloud binary mask',
+  cloud_base_altitude: 'Cloud base altitude',
+  cloud_top_altitude: 'Cloud top altitude',
+};
+
+function frameUrl(layer, step) {
+  return '/cache/' + manifest.frame_url_template
+    .replace('{layer}', layer)
+    .replace('{step:03d}', String(step).padStart(3, '0'));
+}
+
+function show(i) {
+  if (!manifest) return;
+  const n = manifest.valid_times_utc.length;
+  idx = (i + n) % n;
+  base.src = frameUrl(layerSelect.value, idx);
+  slider.value = idx;
+  const t = new Date(manifest.valid_times_utc[idx] + 'Z');
+  timeEl.textContent = t.toLocaleString(undefined, {
+    weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+  });
+}
+function step(d) { show(idx + d); }
+function togglePlay() {
+  playing = !playing;
+  $('play').textContent = playing ? '⏸' : '▶';
+  if (playing) timer = setInterval(() => step(1), 400);
+  else clearInterval(timer);
+}
+
+slider.addEventListener('input', e => { if (playing) togglePlay(); show(+e.target.value); });
+$('play').onclick = togglePlay;
+$('prev').onclick = () => { if (playing) togglePlay(); step(-1); };
+$('next').onclick = () => { if (playing) togglePlay(); step(1); };
+layerSelect.onchange = () => show(idx);
+$('showOverlay').onchange = e => { overlay.style.display = e.target.checked ? 'block' : 'none'; };
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowLeft') { if (playing) togglePlay(); step(-1); }
+  if (e.key === 'ArrowRight') { if (playing) togglePlay(); step(1); }
+});
+
+fetch('/cache/manifest.json').then(r => { if (!r.ok) throw new Error('no manifest'); return r.json(); })
+  .then(man => {
+    manifest = man;
+    slider.max = man.valid_times_utc.length - 1;
+    $('runinfo').textContent = 'MEPS run ' + man.run_utc.replace('T', ' ').slice(0, 16) +
+        ' UTC · ' + man.valid_times_utc.length + ' steps · grid ' + man.grid.nx + 'x' + man.grid.ny;
+    for (const layer of man.layers) {
+      const opt = document.createElement('option');
+      opt.value = layer;
+      opt.textContent = LAYER_LABEL[layer] || layer;
+      layerSelect.appendChild(opt);
+    }
+    show(0);
+  })
+  .catch(e => { $('err').textContent = 'No data yet, or manifest fetch failed: ' + e.message; });
+</script>
+</body>
+</html>
