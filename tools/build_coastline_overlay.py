@@ -8,7 +8,8 @@ This is the ONLY place cartopy/pyproj/matplotlib are needed in this repo;
 the periodic fetch+render pipeline never imports them. Re-run this only if
 the grid definition changes (it won't -- MEPS's native grid is fixed).
 
-Roads come from Natural Earth 10m; ferries are dropped (they're tagged
+Roads come from Natural Earth 10m, clipped to Finland's national polygon
+(only Finnish roads are of interest); ferries are dropped (they're tagged
 featurecla='Ferry' and otherwise draw as lines across open sea). Each road
 class (Natural Earth's `type`: Major Highway / Secondary Highway / Road /
 Unknown) is written to its own PNG so the viewer can toggle them separately.
@@ -34,16 +35,21 @@ from mepscloud import config, fetch
 
 STATIC = Path(__file__).resolve().parent.parent / "web" / "static"
 
+# figsize is (nx/DPI, ny/DPI) at DPI below, so 1 matplotlib point spans
+# DPI/72 pixels; invert to specify line widths directly in target pixels.
+DPI = 100
+PX = 72.0 / DPI  # matplotlib-points per output pixel
+
 # Road classes to split into separate toggleable PNGs, in draw/legend order
-# (most to least prominent), with per-class line width + a starting colour.
-# All the same warm tone for now -- colour tuning is a later pass.
+# (most to least prominent), with per-class line width IN PIXELS + a starting
+# colour. All the same warm tone for now -- colour tuning is a later pass.
 ROAD_CLASSES = [
-    ("Major Highway",     "roads_major.png",     1.1, "#e8b060"),
-    ("Secondary Highway", "roads_secondary.png", 0.7, "#e0c080"),
-    ("Road",              "roads_road.png",      0.5, "#d8c8a0"),
-    ("Unknown",           "roads_unknown.png",   0.4, "#c8c0a8"),
+    ("Major Highway",     "roads_major.png",     3 * PX, "#e8b060"),
+    ("Secondary Highway", "roads_secondary.png", 2 * PX, "#e0c080"),
+    ("Road",              "roads_road.png",      1 * PX, "#d8c8a0"),
+    ("Unknown",           "roads_unknown.png",   1 * PX, "#c8c0a8"),
 ]
-ROADS_BBOX = (-20, 49, 56, 76)  # generous, whole map domain not just Finland
+FINLAND_BBOX = (19, 59, 32, 70.6)  # quick prefilter before the polygon clip
 
 
 def _transformer():
@@ -60,9 +66,23 @@ def native_lines(category: str, name: str, resolution: str = "50m"):
     return lines
 
 
+def _finland_polygon():
+    """Finland's national land polygon (incl. Aland) from Natural Earth 10m,
+    to clip roads to Finland only."""
+    reader = shpreader.Reader(shpreader.natural_earth(
+        resolution="10m", category="cultural", name="admin_0_countries"))
+    for rec in reader.records():
+        if rec.attributes.get("ADMIN") == "Finland" or rec.attributes.get("NAME") == "Finland":
+            return rec.geometry
+    raise RuntimeError("Finland not found in admin_0_countries")
+
+
 def road_lines_by_class(bbox):
-    """{class_name: [(xs, ys), ...]} for non-ferry roads whose centroid is in
-    bbox. Natural Earth roads is a global ~56k-feature set, so filter."""
+    """{class_name: [(xs, ys), ...]} for non-ferry roads clipped to Finland's
+    polygon. Natural Earth roads is a global ~56k-feature set; a cheap bbox
+    prefilter avoids running the (much costlier) polygon intersection on every
+    feature worldwide."""
+    finland = _finland_polygon()
     reader = shpreader.Reader(shpreader.natural_earth(resolution="10m", category="cultural", name="roads"))
     to_native = _transformer()
     out = {name: [] for name, *_ in ROAD_CLASSES}
@@ -78,8 +98,12 @@ def road_lines_by_class(bbox):
         c = rec.geometry.centroid
         if not (bbox[0] <= c.x <= bbox[2] and bbox[1] <= c.y <= bbox[3]):
             continue
-        for part in _parts(rec.geometry):
-            out[cls].append(_project(part, to_native))
+        clipped = rec.geometry.intersection(finland)  # keep only the part in Finland
+        if clipped.is_empty:
+            continue
+        for part in _parts(clipped):
+            if part.geom_type == "LineString" and len(part.coords) >= 2:
+                out[cls].append(_project(part, to_native))
     print(f"[overlay]   dropped {dropped_ferry} ferry features")
     return out
 
@@ -96,8 +120,7 @@ def _project(part, to_native):
 
 def render_png(layers, out_path, nx, ny, extent):
     """layers = [(lines, color, lw), ...]; drawn in order (first = bottom)."""
-    dpi = 100
-    fig = plt.figure(figsize=(nx / dpi, ny / dpi), dpi=dpi)
+    fig = plt.figure(figsize=(nx / DPI, ny / DPI), dpi=DPI)
     ax = fig.add_axes([0, 0, 1, 1])
     ax.set_xlim(extent[0], extent[1])
     ax.set_ylim(extent[2], extent[3])
@@ -107,7 +130,7 @@ def render_png(layers, out_path, nx, ny, extent):
     for lines, color, lw in layers:
         for xs, ys in lines:
             ax.plot(xs, ys, color=color, lw=lw, solid_capstyle="round")
-    fig.savefig(out_path, dpi=dpi, transparent=True)
+    fig.savefig(out_path, dpi=DPI, transparent=True)
     plt.close(fig)
     from PIL import Image
     assert Image.open(out_path).size == (nx, ny), "PNG size must match grid exactly"
@@ -136,8 +159,8 @@ def main():
         STATIC / "overlay.png", nx, ny, extent,
     )
 
-    print("[overlay] roads (one PNG per class, ferries dropped)...")
-    by_class = road_lines_by_class(ROADS_BBOX)
+    print("[overlay] roads (one PNG per class, clipped to Finland, ferries dropped)...")
+    by_class = road_lines_by_class(FINLAND_BBOX)
     for cls, fname, lw, color in ROAD_CLASSES:
         lines = by_class[cls]
         print(f"[overlay]   {cls}: {len(lines)} segments")
