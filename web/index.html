@@ -50,12 +50,15 @@
                        transition:background .2s; }
   .box.s1 { background:#d0a030; }   /* fetched */
   .box.s2 { background:#3fb950; }   /* processed / ready */
+  .status-log { margin-top:6px; color:var(--muted); font-size:10px;
+                font-variant-numeric:tabular-nums; line-height:1.5; }
   .menu { position:relative; }
   .menu > summary { list-style:none; cursor:pointer; background:#21262d; color:var(--fg);
     border:1px solid var(--line); border-radius:6px; padding:6px 10px; font-size:13px; user-select:none; }
   .menu > summary::-webkit-details-marker { display:none; }
   .menu[open] > summary { background:#2d333b; }
-  .menu-body { position:absolute; z-index:20; top:100%; left:0; margin-top:4px;
+  /* opens upward (over the map) so it never pushes the page past the viewport */
+  .menu-body { position:absolute; z-index:20; bottom:100%; left:0; margin-bottom:4px;
     background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:8px 10px;
     display:flex; flex-direction:column; gap:8px; white-space:nowrap; }
   .menu-body label { display:flex; align-items:center; gap:6px; }
@@ -299,6 +302,20 @@ function fmtInit(iso) {
   const off = Math.round((Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute) - d.getTime()) / 3600000);
   return `${utc} UTC / ${p.hour}:${p.minute} ${off === 3 ? 'EEST' : 'EET'}`;
 }
+// Wall-clock time of a UTC ISO instant in Helsinki, "HH:MM:SS EEST".
+function fmtClock(iso) {
+  const d = new Date(iso);
+  const p = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/Helsinki', hourCycle: 'h23',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  }).formatToParts(d).reduce((o, x) => (o[x.type] = x.value, o), {});
+  // offset for the EET/EEST tag
+  const pd = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Helsinki', hourCycle: 'h23',
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+    .formatToParts(d).reduce((o, x) => (o[x.type] = x.value, o), {});
+  const off = Math.round((Date.UTC(+pd.year, +pd.month - 1, +pd.day, +pd.hour, +pd.minute) - d.getTime()) / 3600000);
+  return `${p.hour}:${p.minute}:${p.second} ${off === 3 ? 'EEST' : 'EET'}`;
+}
 function renderStatus(data) {
   const el = $('status');
   el.innerHTML = '';
@@ -324,7 +341,15 @@ function renderStatus(data) {
       }
       row.appendChild(boxes); grid.appendChild(row);
     }
-    runEl.appendChild(grid); el.appendChild(runEl);
+    runEl.appendChild(grid);
+    const log = document.createElement('div'); log.className = 'status-log';
+    for (const ev of (run.events || [])) {
+      const line = document.createElement('div');
+      line.textContent = fmtClock(ev.at) + ' · ' + ev.label;
+      log.appendChild(line);
+    }
+    runEl.appendChild(log);
+    el.appendChild(runEl);
   }
 }
 function pollStatus() {

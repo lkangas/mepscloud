@@ -66,6 +66,10 @@ COMBINED_INPUTS = (
 STATUS_PRODUCTS = list(config.CLOUD_VARS) + ["combined"]
 
 
+def _now() -> str:
+    return dt.datetime.now(dt.UTC).isoformat()
+
+
 class _Status:
     """Incremental fetch/process status for the viewer to poll (cache/
     status.json). Per product, per frame: 0=available, 1=fetched, 2=processed.
@@ -82,13 +86,24 @@ class _Status:
         self.states = {p: [0] * n_frames for p in self.products}
         self.fetched_at = {p: None for p in self.products}
         self._since_write = 0
+        # Timestamped key points for the viewer's log (all UTC ISO).
+        self.events = [{"label": "init available", "at": _now()}]
+        self._fetch_done = False
 
     def mark_fetched(self, product: str):
         self.states[product] = [max(s, 1) for s in self.states[product]]
-        self.fetched_at[product] = dt.datetime.now(dt.UTC).isoformat()
+        self.fetched_at[product] = _now()
+        # fetching = downloading the raw MEPS vars (combined is derived, not
+        # fetched); complete once every raw var is in.
+        if not self._fetch_done and all(self.fetched_at[p] for p in config.CLOUD_VARS):
+            self._fetch_done = True
+            self.events.append({"label": "fetch complete", "at": _now()})
 
     def mark_processed(self, product: str, ti: int):
         self.states[product][ti] = 2
+
+    def mark_done(self):
+        self.events.append({"label": "processing complete", "at": _now()})
 
     def _doc(self) -> dict:
         return {"runs": [{
@@ -97,6 +112,7 @@ class _Status:
             "products": self.products,
             "states": self.states,
             "fetched_at": self.fetched_at,
+            "events": self.events,
         }]}
 
     def write(self):
@@ -244,6 +260,7 @@ def render_latest_run(force: bool = False) -> dict:
         status.write()
         cdir = _write_combined_frames(combined_inputs, out_dir,
                                       on_frame=lambda ti: (status.mark_processed("combined", ti), status.write_throttled()))
+        status.mark_done()
         status.write()
         print(f"[render]   combined: {len(valid_times)} frames -> {cdir}")
     finally:
@@ -289,6 +306,7 @@ def render_from_npz(npz_path: Path, force: bool = True) -> dict:
         status.write()
         cdir = _write_combined_frames({k: z[k] for k in COMBINED_INPUTS}, out_dir,
                                       on_frame=lambda ti: (status.mark_processed("combined", ti), status.write_throttled()))
+        status.mark_done()
         status.write()
         print(f"[render]   combined: {len(valid_times)} frames -> {cdir}")
 
