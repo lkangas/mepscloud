@@ -51,11 +51,11 @@
       <div class="spacer"></div>
       <div id="sea-layer"></div>
       <div id="land-layer"></div>
-      <svg id="twilight-shade" preserveAspectRatio="none" style="position:absolute; inset:0; width:100%; height:100%;"></svg>
       <img id="base" alt="cloud layer frame">
+      <svg id="twilight-shade" preserveAspectRatio="none" style="position:absolute; inset:0; width:100%; height:100%;"></svg>
+      <svg id="twilight-lines" preserveAspectRatio="none" style="position:absolute; inset:0; width:100%; height:100%;"></svg>
       <img id="roads" src="static/roads.png" alt="Finnish roads">
       <img id="overlay" src="static/overlay.png" alt="coastlines/borders">
-      <svg id="twilight-lines" preserveAspectRatio="none" style="position:absolute; inset:0; width:100%; height:100%;"></svg>
     </div>
     <div class="controls">
       <label>layer <select id="layer"></select></label>
@@ -93,8 +93,8 @@
 const $ = id => document.getElementById(id);
 const base = $('base'), overlay = $('overlay'), slider = $('slider'), timeEl = $('time');
 const layerSelect = $('layer');
-const twilightShadeSvg = $('twilight-shade');  // below clouds
-const twilightLinesSvg = $('twilight-lines');  // on top
+const twilightShadeSvg = $('twilight-shade');  // above clouds, below overlay
+const twilightLinesSvg = $('twilight-lines');  // above shade, below overlay
 let manifest = null, idx = 0, playing = false, timer = null;
 
 // --- land/sea colour selectors (dev tuning) -----------------------------
