@@ -230,7 +230,7 @@ const LAYER_SHORT = {
 };
 
 function frameUrl(layer, step) {
-  return '/cache/' + manifest.frame_url_template
+  return 'cache/' + manifest.frame_url_template
     .replace('{layer}', layer)
     .replace('{step:03d}', String(step).padStart(3, '0'));
 }
@@ -373,7 +373,7 @@ function renderStatus(data) {
   }
 }
 function openLog() {
-  fetch('/cache/log.txt?_=' + Date.now())
+  fetch('cache/log.txt?_=' + Date.now())
     .then(r => r.ok ? r.text() : '(no log yet)')
     .then(t => { $('logPre').textContent = t.trimEnd() || '(log is empty)'; $('logModal').hidden = false; })
     .catch(() => { $('logPre').textContent = '(log unavailable)'; $('logModal').hidden = false; });
@@ -382,7 +382,7 @@ $('logClose').onclick = () => { $('logModal').hidden = true; };
 $('logModal').onclick = e => { if (e.target === $('logModal')) $('logModal').hidden = true; };
 document.addEventListener('keydown', e => { if (e.key === 'Escape') $('logModal').hidden = true; });
 function pollStatus() {
-  fetch('/cache/status.json?_=' + Date.now())
+  fetch('cache/status.json?_=' + Date.now())
     .then(r => r.ok ? r.json() : null).then(d => { if (d) renderStatus(d); }).catch(() => {});
 }
 setInterval(pollStatus, 2000);
@@ -423,13 +423,13 @@ function applyManifest(man) {
   if (runChanged) $('err').textContent = '';
 }
 function pollManifest() {
-  fetch('/cache/manifest.json?_=' + Date.now())
+  fetch('cache/manifest.json?_=' + Date.now())
     .then(r => r.ok ? r.json() : null)
     .then(man => { if (man && (!manifest || man.run_utc !== manifest.run_utc)) applyManifest(man); })
     .catch(() => {});
 }
 setInterval(pollManifest, 5000);
-fetch('/cache/manifest.json').then(r => { if (!r.ok) throw new Error('no manifest'); return r.json(); })
+fetch('cache/manifest.json').then(r => { if (!r.ok) throw new Error('no manifest'); return r.json(); })
   .then(applyManifest)
   .catch(e => { $('err').textContent = 'No data yet, or manifest fetch failed: ' + e.message; });
 </script>

@@ -6,14 +6,20 @@ see mepscloud/fetch.py's docstring for why).
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
-# Paths (cache lives under the project; it is regenerated, safe to delete).
+# Paths. Generated output (frames, manifest, status, log) lives UNDER web/ so
+# it sits next to index.html + static/ and is reachable with page-relative
+# URLs (cache/..., static/...) -- which is what lets the app work unchanged
+# whether it's served at the dev root or under the /clouds/ subpath in prod.
+# Override the cache location with MEPSCLOUD_CACHE_DIR (the deployed updater
+# points it at the Caddy-served volume).
 # ---------------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-CACHE_DIR = PROJECT_ROOT / "cache"
 WEB_DIR = PROJECT_ROOT / "web"
+CACHE_DIR = Path(os.environ.get("MEPSCLOUD_CACHE_DIR", WEB_DIR / "cache"))
 
 # ---------------------------------------------------------------------------
 # MET Norway THREDDS (see mepscloud/fetch.py for the catalog-listing logic).
