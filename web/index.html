@@ -359,29 +359,49 @@ function pollStatus() {
 setInterval(pollStatus, 2000);
 pollStatus();
 
+function buildLayerButtons(layers) {
+  currentLayer = layers[0];
+  layerButtons.innerHTML = '';
+  for (const layer of layers) {
+    const btn = document.createElement('button');
+    btn.textContent = LAYER_SHORT[layer] || layer;
+    btn.title = LAYER_LABEL[layer] || layer;
+    btn.dataset.layer = layer;
+    if (layer === currentLayer) btn.classList.add('active');
+    btn.onclick = () => {
+      currentLayer = layer;
+      [...layerButtons.children].forEach(b => b.classList.toggle('active', b === btn));
+      updateLayerLegend();
+      show(idx);
+    };
+    layerButtons.appendChild(btn);
+  }
+  updateLayerLegend();
+}
+
+// applyManifest (re)initialises the map for a run. Called on load and again
+// when the manifest's run_utc changes (handover: the map switches to the new
+// run once the pipeline finishes it and updates manifest.json).
+function applyManifest(man) {
+  const runChanged = manifest && man.run_utc !== manifest.run_utc;
+  const firstLoad = !manifest;
+  manifest = man;
+  slider.max = man.valid_times_utc.length - 1;
+  initTwilightSvg(man.grid);
+  if (firstLoad || layerButtons.children.length === 0) buildLayerButtons(man.layers);
+  idx = Math.min(idx, man.valid_times_utc.length - 1);
+  show(idx);
+  if (runChanged) $('err').textContent = '';
+}
+function pollManifest() {
+  fetch('/cache/manifest.json?_=' + Date.now())
+    .then(r => r.ok ? r.json() : null)
+    .then(man => { if (man && (!manifest || man.run_utc !== manifest.run_utc)) applyManifest(man); })
+    .catch(() => {});
+}
+setInterval(pollManifest, 5000);
 fetch('/cache/manifest.json').then(r => { if (!r.ok) throw new Error('no manifest'); return r.json(); })
-  .then(man => {
-    manifest = man;
-    slider.max = man.valid_times_utc.length - 1;
-    initTwilightSvg(man.grid);
-    currentLayer = man.layers[0];
-    for (const layer of man.layers) {
-      const btn = document.createElement('button');
-      btn.textContent = LAYER_SHORT[layer] || layer;
-      btn.title = LAYER_LABEL[layer] || layer;
-      btn.dataset.layer = layer;
-      if (layer === currentLayer) btn.classList.add('active');
-      btn.onclick = () => {
-        currentLayer = layer;
-        [...layerButtons.children].forEach(b => b.classList.toggle('active', b === btn));
-        updateLayerLegend();
-        show(idx);
-      };
-      layerButtons.appendChild(btn);
-    }
-    updateLayerLegend();
-    show(0);
-  })
+  .then(applyManifest)
   .catch(e => { $('err').textContent = 'No data yet, or manifest fetch failed: ' + e.message; });
 </script>
 </body>

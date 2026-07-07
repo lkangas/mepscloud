@@ -70,6 +70,20 @@ def _now() -> str:
     return dt.datetime.now(dt.UTC).isoformat()
 
 
+def _prev_status_runs(new_run_utc: str) -> list:
+    """Runs from the existing status.json that are NOT the run about to be
+    processed -- i.e. the previous (already-ready) run, to keep visible during
+    a handover until the new one finishes."""
+    p = config.CACHE_DIR / "status.json"
+    if not p.exists():
+        return []
+    try:
+        runs = json.loads(p.read_text(encoding="utf-8")).get("runs", [])
+    except (OSError, json.JSONDecodeError):
+        return []
+    return [r for r in runs if r.get("run_utc") != new_run_utc]
+
+
 class _Status:
     """Incremental fetch/process status for the viewer to poll (cache/
     status.json). Per product, per frame: 0=available, 1=fetched, 2=processed.
@@ -78,7 +92,7 @@ class _Status:
     run and prunes the previous); the doc is a {"runs": [...]} list so the
     viewer can already handle several once we keep old+new during a handover."""
 
-    def __init__(self, run_time: dt.datetime, n_frames: int, products):
+    def __init__(self, run_time: dt.datetime, n_frames: int, products, prev_runs=None):
         rt = run_time if run_time.tzinfo else run_time.replace(tzinfo=dt.UTC)
         self.run_utc = rt.isoformat()
         self.n_frames = n_frames
@@ -89,6 +103,10 @@ class _Status:
         # Timestamped key points for the viewer's log (all UTC ISO).
         self.events = [{"label": "init available", "at": _now()}]
         self._fetch_done = False
+        # Previous (already-ready) run(s), shown above this one during a
+        # handover; cleared once this run finishes (mark_done) so the old run
+        # then disappears (its frames are pruned at the same point).
+        self.prev_runs = list(prev_runs or [])
 
     def mark_fetched(self, product: str):
         self.states[product] = [max(s, 1) for s in self.states[product]]
@@ -104,16 +122,20 @@ class _Status:
 
     def mark_done(self):
         self.events.append({"label": "processing complete", "at": _now()})
+        self.prev_runs = []  # this run is ready; the old one is dropped now
 
-    def _doc(self) -> dict:
-        return {"runs": [{
+    def _current(self) -> dict:
+        return {
             "run_utc": self.run_utc,
             "n_frames": self.n_frames,
             "products": self.products,
             "states": self.states,
             "fetched_at": self.fetched_at,
             "events": self.events,
-        }]}
+        }
+
+    def _doc(self) -> dict:
+        return {"runs": self.prev_runs + [self._current()]}
 
     def write(self):
         config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -239,7 +261,10 @@ def render_latest_run(force: bool = False) -> dict:
               f"{len(valid_times)} forecast steps")
 
         out_dir.mkdir(parents=True, exist_ok=True)
-        status = _Status(run_time, len(valid_times), STATUS_PRODUCTS)
+        # Handover: keep the previous run visible (and its frames + manifest
+        # live, so the map keeps animating it) until this one is fully ready.
+        prev_runs = _prev_status_runs(run_time.isoformat())
+        status = _Status(run_time, len(valid_times), STATUS_PRODUCTS, prev_runs=prev_runs)
         status.write()
         layers = []
         combined_inputs = {}  # kept in memory to build the derived layer after
