@@ -97,9 +97,9 @@ const twilightLinesSvg = $('twilight-lines');  // above shade, below overlay
 let manifest = null, idx = 0, playing = false, timer = null, currentLayer = null;
 
 // Locked underlay colours (from the earlier slider tuning: sea 7/11, land
-// 16/16). Sliders removed; sea fills the whole frame behind the land mask.
+// 10/16). Sliders removed; sea fills the whole frame behind the land mask.
 const SEA_COLOR = '#245f92';
-const LAND_COLOR = '#c7cf8f';
+const LAND_COLOR = '#5f7338';
 $('sea-layer').style.backgroundColor = SEA_COLOR;
 $('land-layer').style.backgroundColor = LAND_COLOR;
 
@@ -199,6 +199,22 @@ function frameUrl(layer, step) {
     .replace('{step:03d}', String(step).padStart(3, '0'));
 }
 
+// ISO-format the UTC valid time in Finnish local time, tagged EET/EEST.
+// Finland is UTC+2 (EET) in winter, UTC+3 (EEST) in summer DST; derive the
+// tag from the actual offset for the given date rather than assuming.
+function fmtHelsinki(validIso) {
+  const utcDate = new Date(validIso + 'Z');
+  const p = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Helsinki', hourCycle: 'h23',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit',
+  }).formatToParts(utcDate).reduce((o, x) => (o[x.type] = x.value, o), {});
+  const asUTC = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute);
+  const offH = Math.round((asUTC - utcDate.getTime()) / 3600000);
+  const tag = offH === 3 ? 'EEST' : 'EET';
+  return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute} ${tag}`;
+}
+
 function show(i) {
   if (!manifest) return;
   const n = manifest.valid_times_utc.length;
@@ -206,10 +222,7 @@ function show(i) {
   base.src = frameUrl(currentLayer, idx);
   slider.value = idx;
   const validIso = manifest.valid_times_utc[idx];
-  const t = new Date(validIso + 'Z');
-  timeEl.textContent = t.toLocaleString(undefined, {
-    weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
-  });
+  timeEl.textContent = fmtHelsinki(validIso);
   updateTwilight(validIso);
 }
 function step(d) { show(idx + d); }
