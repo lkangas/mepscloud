@@ -78,10 +78,57 @@ def _quantize_metres(arr: np.ndarray) -> np.ndarray:
     return np.clip(np.nan_to_num(arr, nan=0.0), 0, 65535).astype(np.uint16)
 
 
+def run_meta(ds: netCDF4.Dataset):
+    """(x, y, valid_times) for an open run dataset."""
+    x = np.asarray(ds.variables["x"][:], dtype=np.float32)
+    y = np.asarray(ds.variables["y"][:], dtype=np.float32)
+    time_var = ds.variables["time"]
+    valid_times = netCDF4.num2date(
+        time_var[:], time_var.units,
+        only_use_cftime_datetimes=False, only_use_python_datetimes=True,
+    )
+    return x, y, valid_times
+
+
+def iter_quantized_variables(ds: netCDF4.Dataset):
+    """Yield (name, quantized_array) for each cloud variable, one at a time.
+
+    This is the memory-bounding primitive the whole pipeline is built on:
+    callers (npz caching, PNG rendering) consume and discard each variable's
+    array before the next is fetched, so peak memory stays ~one variable's
+    array (~270MB raw float32 in flight, briefly) regardless of how many
+    variables or forecast hours are pulled -- instead of ~2GB for all 8 at
+    once. See module docstring.
+    """
+    for name in config.CLOUD_VARS_FRACTION:
+        print(f"[fetch]   {name}")
+        var = ds.variables[name]
+        # netCDF4 returns a MaskedArray for vars with _FillValue; np.asarray()
+        # on that silently leaks the raw fill sentinel (~9.97e36) through
+        # instead of NaN, which would then get clamped into range by the
+        # quantizer (e.g. "fully cloudy") instead of "no data" -> 0.
+        raw = np.ma.filled(var[:, 0, :, :], np.nan).astype(np.float32)
+        if str(getattr(var, "units", "")) == "%":
+            raw /= 100.0
+        yield name, _quantize_fraction(raw)
+        del raw
+    for name in config.CLOUD_VARS_METRES:
+        print(f"[fetch]   {name}")
+        raw = np.ma.filled(ds.variables[name][:, 0, :, :], np.nan).astype(np.float32)
+        yield name, _quantize_metres(raw)
+        del raw
+
+
 def fetch_latest_run(force: bool = False) -> Path:
     """Fetch the newest run's full forecast horizon for all cloud variables,
     quantize, and write one npz to the cache. No-ops (returns the existing
-    path) if that run is already cached, unless force=True."""
+    path) if that run is already cached, unless force=True.
+
+    This keeps the full quantized array set on disk, which is handy for
+    local dev/inspection -- the production pipeline (render.py) doesn't use
+    this, it streams straight from OPeNDAP to PNGs without ever writing the
+    combined array set to disk. See render.render_latest_run().
+    """
     url, run_time = latest_run_url()
     path = cache_path(run_time)
     if path.exists() and not force:
@@ -91,36 +138,11 @@ def fetch_latest_run(force: bool = False) -> Path:
     print(f"[fetch] opening {url}")
     ds = netCDF4.Dataset(url)
     try:
-        x = np.asarray(ds.variables["x"][:], dtype=np.float32)
-        y = np.asarray(ds.variables["y"][:], dtype=np.float32)
-        time_var = ds.variables["time"]
-        valid_times = netCDF4.num2date(
-            time_var[:], time_var.units,
-            only_use_cftime_datetimes=False, only_use_python_datetimes=True,
-        )
-        n_time = len(valid_times)
+        x, y, valid_times = run_meta(ds)
         print(f"[fetch] run {run_time.isoformat()} | grid {len(y)}x{len(x)} | "
-              f"{n_time} forecast steps ({valid_times[0].isoformat()} .. "
+              f"{len(valid_times)} forecast steps ({valid_times[0].isoformat()} .. "
               f"{valid_times[-1].isoformat()})")
-
-        out: dict[str, np.ndarray] = {}
-        for name in config.CLOUD_VARS_FRACTION:
-            print(f"[fetch]   {name}")
-            var = ds.variables[name]
-            # netCDF4 returns a MaskedArray for vars with _FillValue; np.asarray()
-            # on that silently leaks the raw fill sentinel (~9.97e36) instead of
-            # NaN, which would then get clamped into range by the quantizer
-            # (e.g. "fully cloudy") instead of "no data" -> 0. Fill explicitly.
-            raw = np.ma.filled(var[:, 0, :, :], np.nan).astype(np.float32)
-            if str(getattr(var, "units", "")) == "%":
-                raw /= 100.0
-            out[name] = _quantize_fraction(raw)
-            del raw
-        for name in config.CLOUD_VARS_METRES:
-            print(f"[fetch]   {name}")
-            raw = np.ma.filled(ds.variables[name][:, 0, :, :], np.nan).astype(np.float32)
-            out[name] = _quantize_metres(raw)
-            del raw
+        out = dict(iter_quantized_variables(ds))
     finally:
         ds.close()
 

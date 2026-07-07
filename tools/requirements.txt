@@ -1,0 +1,8 @@
+# Extra deps for tools/build_coastline_overlay.py ONLY -- a one-off, run
+# locally to regenerate web/static/overlay.png (checked in, doesn't change
+# unless the grid definition changes). The production fetch+render pipeline
+# (see ../requirements.txt) never imports these -- keeps the deployed image
+# light (no cartopy/matplotlib/GEOS/PROJ toolchain needed on the VPS).
+Cartopy==0.25.0
+matplotlib==3.11.0
+pyproj==3.7.2
