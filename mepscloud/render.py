@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -61,6 +62,59 @@ COMBINED_INPUTS = (
 )
 
 
+# Processing order = fetch order (raw MEPS vars) then the derived combined.
+STATUS_PRODUCTS = list(config.CLOUD_VARS) + ["combined"]
+
+
+class _Status:
+    """Incremental fetch/process status for the viewer to poll (cache/
+    status.json). Per product, per frame: 0=available, 1=fetched, 2=processed.
+    Written atomically (temp + os.replace) so the viewer never reads a
+    half-written file. Currently one run at a time (the pipeline renders one
+    run and prunes the previous); the doc is a {"runs": [...]} list so the
+    viewer can already handle several once we keep old+new during a handover."""
+
+    def __init__(self, run_time: dt.datetime, n_frames: int, products):
+        rt = run_time if run_time.tzinfo else run_time.replace(tzinfo=dt.UTC)
+        self.run_utc = rt.isoformat()
+        self.n_frames = n_frames
+        self.products = list(products)
+        self.states = {p: [0] * n_frames for p in self.products}
+        self.fetched_at = {p: None for p in self.products}
+        self._since_write = 0
+
+    def mark_fetched(self, product: str):
+        self.states[product] = [max(s, 1) for s in self.states[product]]
+        self.fetched_at[product] = dt.datetime.now(dt.UTC).isoformat()
+
+    def mark_processed(self, product: str, ti: int):
+        self.states[product][ti] = 2
+
+    def _doc(self) -> dict:
+        return {"runs": [{
+            "run_utc": self.run_utc,
+            "n_frames": self.n_frames,
+            "products": self.products,
+            "states": self.states,
+            "fetched_at": self.fetched_at,
+        }]}
+
+    def write(self):
+        config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        p = config.CACHE_DIR / "status.json"
+        tmp = p.with_name("status.json.tmp")
+        tmp.write_text(json.dumps(self._doc()), encoding="utf-8")
+        os.replace(tmp, p)
+        self._since_write = 0
+
+    def write_throttled(self, every: int = 4):
+        """Write at most every `every` frames -- enough for a smooth grid
+        animation without a filesystem write per frame."""
+        self._since_write += 1
+        if self._since_write >= every:
+            self.write()
+
+
 def _to_display_png(arr2d: np.ndarray, is_metres: bool) -> Image.Image:
     """quantized array -> north-up LA (luminance+alpha) PNG: white at an
     opacity equal to cloudiness, so clear (0) is fully transparent."""
@@ -99,7 +153,7 @@ def _combined_rgba(low, mid, high, fog) -> np.ndarray:
     return np.flipud(rgba)
 
 
-def _write_combined_frames(inputs: dict, out_dir: Path) -> Path:
+def _write_combined_frames(inputs: dict, out_dir: Path, on_frame=None) -> Path:
     """inputs maps COMBINED_INPUTS names -> full [t,ny,nx] uint8 arrays."""
     var_dir = out_dir / "combined"
     var_dir.mkdir(exist_ok=True)
@@ -110,6 +164,8 @@ def _write_combined_frames(inputs: dict, out_dir: Path) -> Path:
     for ti in range(low.shape[0]):
         rgba = _combined_rgba(low[ti], mid[ti], high[ti], fog[ti])
         Image.fromarray(rgba, mode="RGBA").save(var_dir / f"{ti:03d}.png")
+        if on_frame:
+            on_frame(ti)
     return var_dir
 
 
@@ -117,7 +173,7 @@ def _frames_dir(run_time: dt.datetime) -> Path:
     return config.CACHE_DIR / "frames" / f"{run_time:%Y%m%dT%H%MZ}"
 
 
-def _write_frames(name: str, quantized: np.ndarray, out_dir: Path) -> Path:
+def _write_frames(name: str, quantized: np.ndarray, out_dir: Path, on_frame=None) -> Path:
     is_metres = name in config.CLOUD_VARS_METRES
     var_dir = out_dir / name
     var_dir.mkdir(exist_ok=True)
@@ -126,6 +182,8 @@ def _write_frames(name: str, quantized: np.ndarray, out_dir: Path) -> Path:
         # optimize=True roughly triples PNG encode time across 500+ frames
         # for a modest size win -- not worth it, especially while iterating.
         img.save(var_dir / f"{ti:03d}.png")
+        if on_frame:
+            on_frame(ti)
     return var_dir
 
 
@@ -165,18 +223,28 @@ def render_latest_run(force: bool = False) -> dict:
               f"{len(valid_times)} forecast steps")
 
         out_dir.mkdir(parents=True, exist_ok=True)
+        status = _Status(run_time, len(valid_times), STATUS_PRODUCTS)
+        status.write()
         layers = []
         combined_inputs = {}  # kept in memory to build the derived layer after
         for name, quantized in fetch.iter_quantized_variables(ds):
             n_frames = quantized.shape[0]
-            var_dir = _write_frames(name, quantized, out_dir)
+            status.mark_fetched(name)  # the generator already downloaded it
+            status.write()
+            var_dir = _write_frames(name, quantized, out_dir,
+                                    on_frame=lambda ti, n=name: (status.mark_processed(n, ti), status.write_throttled()))
+            status.write()
             layers.append(name)
             if name in COMBINED_INPUTS:
                 combined_inputs[name] = quantized  # ~68MB uint8 each, 4 kept
             else:
                 del quantized
             print(f"[render]   {name}: {n_frames} frames -> {var_dir}")
-        cdir = _write_combined_frames(combined_inputs, out_dir)
+        status.mark_fetched("combined")
+        status.write()
+        cdir = _write_combined_frames(combined_inputs, out_dir,
+                                      on_frame=lambda ti: (status.mark_processed("combined", ti), status.write_throttled()))
+        status.write()
         print(f"[render]   combined: {len(valid_times)} frames -> {cdir}")
     finally:
         ds.close()
@@ -206,12 +274,22 @@ def render_from_npz(npz_path: Path, force: bool = True) -> dict:
                 return existing
 
         out_dir.mkdir(parents=True, exist_ok=True)
+        status = _Status(run_time, len(valid_times), STATUS_PRODUCTS)
+        status.write()
         layers = []
         for name in config.CLOUD_VARS:
-            var_dir = _write_frames(name, z[name], out_dir)
+            status.mark_fetched(name)  # data already local in the npz
+            status.write()
+            var_dir = _write_frames(name, z[name], out_dir,
+                                    on_frame=lambda ti, n=name: (status.mark_processed(n, ti), status.write_throttled()))
+            status.write()
             layers.append(name)
             print(f"[render]   {name}: {len(valid_times)} frames -> {var_dir}")
-        cdir = _write_combined_frames({k: z[k] for k in COMBINED_INPUTS}, out_dir)
+        status.mark_fetched("combined")
+        status.write()
+        cdir = _write_combined_frames({k: z[k] for k in COMBINED_INPUTS}, out_dir,
+                                      on_frame=lambda ti: (status.mark_processed("combined", ti), status.write_throttled()))
+        status.write()
         print(f"[render]   combined: {len(valid_times)} frames -> {cdir}")
 
     layers = ["combined"] + layers  # derived layer first = viewer default

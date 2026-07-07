@@ -38,7 +38,18 @@
   .timelabel { font-variant-numeric:tabular-nums; min-width:160px; text-align:right; color:var(--muted); }
   .err { color:#ff7b72; font-size:12px; margin-top:8px; }
   label { font-size:12px; color:var(--muted); }
-  .runinfo { color:var(--muted); font-size:11px; margin-top:12px; }
+  /* fetch/process status grid */
+  .status { margin-top:12px; font-size:11px; }
+  .status-run { margin-bottom:10px; }
+  .status-hdr { color:var(--fg); font-variant-numeric:tabular-nums; margin-bottom:4px; }
+  .status-grid { display:flex; flex-direction:column; gap:2px; }
+  .status-row { display:flex; align-items:center; gap:6px; }
+  .status-lbl { flex:none; width:34px; text-align:right; color:var(--muted); font-size:10px; }
+  .status-boxes { display:flex; gap:1px; }
+  .status-boxes .box { width:6px; height:11px; border-radius:1px; background:#30363d;
+                       transition:background .2s; }
+  .box.s1 { background:#d0a030; }   /* fetched */
+  .box.s2 { background:#3fb950; }   /* processed / ready */
   .menu { position:relative; }
   .menu > summary { list-style:none; cursor:pointer; background:#21262d; color:var(--fg);
     border:1px solid var(--line); border-radius:6px; padding:6px 10px; font-size:13px; user-select:none; }
@@ -82,7 +93,7 @@
       <input id="slider" type="range" min="0" max="0" value="0">
       <span class="timelabel" id="time">—</span>
     </div>
-    <div id="runinfo" class="runinfo">loading…</div>
+    <div id="status" class="status"></div>
     <div class="err" id="err"></div>
   </section>
 </main>
@@ -276,13 +287,58 @@ function updateLayerLegend() {
   }
 }
 
+// --- fetch/process status grid (polls cache/status.json) ----------------
+// Format a run's init time (ISO with offset) as "YYYY-MM-DD HH:MM UTC / HH:MM EEST".
+function fmtInit(iso) {
+  const d = new Date(iso);
+  const utc = d.toISOString().slice(0, 16).replace('T', ' ');
+  const p = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Helsinki', hourCycle: 'h23',
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+  }).formatToParts(d).reduce((o, x) => (o[x.type] = x.value, o), {});
+  const off = Math.round((Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute) - d.getTime()) / 3600000);
+  return `${utc} UTC / ${p.hour}:${p.minute} ${off === 3 ? 'EEST' : 'EET'}`;
+}
+function renderStatus(data) {
+  const el = $('status');
+  el.innerHTML = '';
+  for (const run of (data.runs || [])) {
+    const runEl = document.createElement('div'); runEl.className = 'status-run';
+    const hdr = document.createElement('div'); hdr.className = 'status-hdr';
+    const done = run.products.every(p => (run.states[p] || []).every(s => s === 2));
+    hdr.textContent = 'MEPS init ' + fmtInit(run.run_utc) + (done ? '  · ready' : '  · processing…');
+    runEl.appendChild(hdr);
+    const grid = document.createElement('div'); grid.className = 'status-grid';
+    for (const prod of run.products) {
+      const row = document.createElement('div'); row.className = 'status-row';
+      const lbl = document.createElement('span'); lbl.className = 'status-lbl';
+      lbl.textContent = LAYER_SHORT[prod] || prod;
+      row.appendChild(lbl);
+      const boxes = document.createElement('div'); boxes.className = 'status-boxes';
+      const states = run.states[prod] || [];
+      for (let i = 0; i < run.n_frames; i++) {
+        const b = document.createElement('span');
+        const s = states[i] || 0;
+        b.className = 'box' + (s ? ' s' + s : '');
+        boxes.appendChild(b);
+      }
+      row.appendChild(boxes); grid.appendChild(row);
+    }
+    runEl.appendChild(grid); el.appendChild(runEl);
+  }
+}
+function pollStatus() {
+  fetch('/cache/status.json?_=' + Date.now())
+    .then(r => r.ok ? r.json() : null).then(d => { if (d) renderStatus(d); }).catch(() => {});
+}
+setInterval(pollStatus, 2000);
+pollStatus();
+
 fetch('/cache/manifest.json').then(r => { if (!r.ok) throw new Error('no manifest'); return r.json(); })
   .then(man => {
     manifest = man;
     slider.max = man.valid_times_utc.length - 1;
     initTwilightSvg(man.grid);
-    $('runinfo').textContent = 'MEPS run ' + man.run_utc.replace('T', ' ').slice(0, 16) +
-        ' UTC · ' + man.valid_times_utc.length + ' steps · grid ' + man.grid.nx + 'x' + man.grid.ny;
     currentLayer = man.layers[0];
     for (const layer of man.layers) {
       const btn = document.createElement('button');
