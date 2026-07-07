@@ -30,6 +30,12 @@
   .controls button { background:#21262d; color:var(--fg); border:1px solid var(--line);
                      border-radius:6px; padding:6px 10px; cursor:pointer; font-size:14px; }
   .controls button:hover { background:#2d333b; }
+  .seg { display:inline-flex; border:1px solid var(--line); border-radius:6px; overflow:hidden; }
+  .seg button { background:#21262d; color:var(--fg); border:none; border-left:1px solid var(--line);
+                border-radius:0; padding:6px 10px; cursor:pointer; font-size:13px; }
+  .seg button:first-child { border-left:none; }
+  .seg button:hover { background:#2d333b; }
+  .seg button.active { background:var(--accent); color:#fff; }
   select { background:#21262d; color:var(--fg); border:1px solid var(--line); border-radius:6px;
            padding:6px 8px; font-size:13px; }
   input[type=range] { flex:1; min-width:200px; accent-color:var(--accent); }
@@ -58,21 +64,14 @@
       <img id="overlay" src="static/overlay.png" alt="coastlines/borders">
     </div>
     <div class="controls">
-      <label>layer <select id="layer"></select></label>
+      <span class="hint">layer:</span>
+      <div id="layerButtons" class="seg"></div>
+    </div>
+    <div class="controls">
       <label><input type="checkbox" id="showRoads" checked> roads</label>
       <label><input type="checkbox" id="showOverlay" checked> coastlines</label>
       <label><input type="checkbox" id="showTwilightShade" checked> sun shade</label>
       <label><input type="checkbox" id="showTwilightLines" checked> sun lines</label>
-    </div>
-    <div class="controls">
-      <label style="min-width:52px">sea</label>
-      <input type="range" id="seaShade" min="0" max="0" value="0">
-      <span class="timelabel" id="seaHex" style="min-width:80px; text-align:left">—</span>
-    </div>
-    <div class="controls">
-      <label style="min-width:52px">land</label>
-      <input type="range" id="landShade" min="0" max="0" value="0">
-      <span class="timelabel" id="landHex" style="min-width:80px; text-align:left">—</span>
     </div>
     <div class="controls">
       <button id="play" title="Play/pause">▶</button>
@@ -92,36 +91,17 @@
 <script>
 const $ = id => document.getElementById(id);
 const base = $('base'), overlay = $('overlay'), slider = $('slider'), timeEl = $('time');
-const layerSelect = $('layer');
+const layerButtons = $('layerButtons');
 const twilightShadeSvg = $('twilight-shade');  // above clouds, below overlay
 const twilightLinesSvg = $('twilight-lines');  // above shade, below overlay
-let manifest = null, idx = 0, playing = false, timer = null;
+let manifest = null, idx = 0, playing = false, timer = null, currentLayer = null;
 
-// --- land/sea colour selectors (dev tuning) -----------------------------
-// Scroll each slider through the palette; the map recolours live.
-const SEA_SHADES = [
-  '#04070d', '#07111f', '#0b1d3a', '#10294d', '#163a63',
-  '#1c4a78', '#245f92', '#2f77ad', '#4a90c4', '#68a8d6', '#8fc0e6',
-];
-const LAND_SHADES = [
-  '#0e130d', '#161f13', '#1c2b1e', '#25301c', '#2b2a19',
-  '#39401f', '#3d3524', '#4a5a2e', '#574328', '#5f7338',
-  '#6f5636', '#7d9448', '#8a6a42', '#9db35f', '#b08a54', '#c7cf8f',
-];
-
-function initShadeSelector(sliderId, hexId, palette, layerEl, startHex) {
-  const s = $(sliderId), hex = $(hexId);
-  s.max = palette.length - 1;
-  let start = palette.indexOf(startHex);
-  s.value = start >= 0 ? start : Math.floor(palette.length / 2);
-  const apply = () => {
-    const c = palette[+s.value];
-    layerEl.style.backgroundColor = c;
-    hex.textContent = `${+s.value + 1}/${palette.length}  ${c}`;
-  };
-  s.oninput = apply;
-  apply();
-}
+// Locked underlay colours (from the earlier slider tuning: sea 7/11, land
+// 16/16). Sliders removed; sea fills the whole frame behind the land mask.
+const SEA_COLOR = '#245f92';
+const LAND_COLOR = '#c7cf8f';
+$('sea-layer').style.backgroundColor = SEA_COLOR;
+$('land-layer').style.backgroundColor = LAND_COLOR;
 
 // fillAlpha values are a first guess, meant to be tuned visually: each
 // depression level's "beyond this point" disk is stacked as its own layer
@@ -202,6 +182,16 @@ const LAYER_LABEL = {
   cloud_base_altitude: 'Cloud base altitude',
   cloud_top_altitude: 'Cloud top altitude',
 };
+const LAYER_SHORT = {
+  cloud_area_fraction: 'T',
+  low_type_cloud_area_fraction: 'L',
+  medium_type_cloud_area_fraction: 'M',
+  high_type_cloud_area_fraction: 'H',
+  convective_cloud_area_fraction: 'Conv',
+  cloud_binary_mask: 'Mask',
+  cloud_base_altitude: 'Base',
+  cloud_top_altitude: 'Top',
+};
 
 function frameUrl(layer, step) {
   return '/cache/' + manifest.frame_url_template
@@ -213,7 +203,7 @@ function show(i) {
   if (!manifest) return;
   const n = manifest.valid_times_utc.length;
   idx = (i + n) % n;
-  base.src = frameUrl(layerSelect.value, idx);
+  base.src = frameUrl(currentLayer, idx);
   slider.value = idx;
   const validIso = manifest.valid_times_utc[idx];
   const t = new Date(validIso + 'Z');
@@ -234,7 +224,6 @@ slider.addEventListener('input', e => { if (playing) togglePlay(); show(+e.targe
 $('play').onclick = togglePlay;
 $('prev').onclick = () => { if (playing) togglePlay(); step(-1); };
 $('next').onclick = () => { if (playing) togglePlay(); step(1); };
-layerSelect.onchange = () => show(idx);
 $('showRoads').onchange = e => { $('roads').style.display = e.target.checked ? 'block' : 'none'; };
 $('showOverlay').onchange = e => { overlay.style.display = e.target.checked ? 'block' : 'none'; };
 $('showTwilightShade').onchange = e => {
@@ -245,8 +234,6 @@ $('showTwilightLines').onchange = e => {
   const d = e.target.checked ? 'inline' : 'none';
   TWILIGHT_BANDS.forEach(b => $('twi-line-' + b.depression).style.display = d);
 };
-initShadeSelector('seaShade', 'seaHex', SEA_SHADES, $('sea-layer'), '#245f92');   // 7/11
-initShadeSelector('landShade', 'landHex', LAND_SHADES, $('land-layer'), '#5f7338'); // 10/16
 document.addEventListener('keydown', e => {
   if (e.key === 'ArrowLeft') { if (playing) togglePlay(); step(-1); }
   if (e.key === 'ArrowRight') { if (playing) togglePlay(); step(1); }
@@ -259,11 +246,19 @@ fetch('/cache/manifest.json').then(r => { if (!r.ok) throw new Error('no manifes
     initTwilightSvg(man.grid);
     $('runinfo').textContent = 'MEPS run ' + man.run_utc.replace('T', ' ').slice(0, 16) +
         ' UTC · ' + man.valid_times_utc.length + ' steps · grid ' + man.grid.nx + 'x' + man.grid.ny;
+    currentLayer = man.layers[0];
     for (const layer of man.layers) {
-      const opt = document.createElement('option');
-      opt.value = layer;
-      opt.textContent = LAYER_LABEL[layer] || layer;
-      layerSelect.appendChild(opt);
+      const btn = document.createElement('button');
+      btn.textContent = LAYER_SHORT[layer] || layer;
+      btn.title = LAYER_LABEL[layer] || layer;
+      btn.dataset.layer = layer;
+      if (layer === currentLayer) btn.classList.add('active');
+      btn.onclick = () => {
+        currentLayer = layer;
+        [...layerButtons.children].forEach(b => b.classList.toggle('active', b === btn));
+        show(idx);
+      };
+      layerButtons.appendChild(btn);
     }
     show(0);
   })
