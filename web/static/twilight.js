@@ -52,9 +52,22 @@ const PROJ = (() => {
   const rho0 = R * F / Math.pow(Math.tan(Math.PI / 4 + lat0 / 2), n);
   return {
     forward(latDeg, lonDeg) {
-      const lat = latDeg * DEG, lon = lonDeg * DEG;
+      const lat = latDeg * DEG;
+      // destPoint()'s returned longitude is subsolar_lon + atan2(...), which
+      // is NOT normalized -- it can land well outside +-180 as bearing
+      // sweeps through a full circle. Wrapping (lon - lon0) here, rather
+      // than trusting the input range, avoids a fake ~n*360deg jump in
+      // theta (and thus in projected x/y) whenever that raw value crosses
+      // +-180 -- which isn't a real projection discontinuity, just unwrapped
+      // input, but produces an indistinguishable-looking huge jump that
+      // upstream discontinuity detection (twilightContourSegments) would
+      // otherwise "correctly" but wrongly break the path on.
+      let dLonDeg = (lonDeg - lon0 * RAD) % 360;
+      if (dLonDeg > 180) dLonDeg -= 360;
+      else if (dLonDeg < -180) dLonDeg += 360;
+      const lon = dLonDeg * DEG;
       const rho = R * F / Math.pow(Math.tan(Math.PI / 4 + lat / 2), n);
-      const theta = n * (lon - lon0);
+      const theta = n * lon;
       return [rho * Math.sin(theta), rho0 - rho * Math.cos(theta)];
     },
   };
