@@ -68,19 +68,41 @@ function toPixel(x, y, grid) {
   return [px, py];
 }
 
-// One contour's pixel-space point list for a given UTC Date + depression
-// angle (degrees below horizon: 0, 6, 12, 18). Points that fail to project
-// finitely are dropped rather than crashing the whole contour.
-function twilightContourPixels(date, depressionDeg, grid, nSamples = 180) {
+// One contour's pixel-space point segments for a given UTC Date + depression
+// angle (degrees below horizon: 0, 6, 12, 18). Returns an array of point
+// arrays ("segments"), NOT one flat list: the sampled circle can pass near
+// the Lambert projection's singularity (opposite side of the globe from its
+// tangent point, reachable since a -18 deg contour has a 108 deg angular
+// radius), where rho blows up toward infinity. A naive single polyline
+// would connect a sane point straight to that near-infinite one -- a stray
+// line shooting across the whole visible frame, clipped only by the SVG
+// viewport edge (looks like the contour "runs off the side"). Instead we
+// break into a new segment wherever consecutive points jump implausibly
+// far, so only the genuinely continuous, in-view parts of the curve draw.
+function twilightContourSegments(date, depressionDeg, grid, nSamples = 180) {
   const sub = subsolarPoint(date);
   const radius = 90 + depressionDeg;
-  const pts = [];
+  const maxJumpPx = 2 * Math.max(grid.nx, grid.ny); // discontinuity threshold
+  const segments = [];
+  let current = [];
+  let prev = null;
   for (let i = 0; i <= nSamples; i++) {
     const bearing = (i / nSamples) * 2 * Math.PI;
     const { lat, lon } = destPoint(sub.lat, sub.lon, radius, bearing);
     const [x, y] = PROJ.forward(lat, lon);
     const [px, py] = toPixel(x, y, grid);
-    if (Number.isFinite(px) && Number.isFinite(py)) pts.push([px, py]);
+    const valid = Number.isFinite(px) && Number.isFinite(py);
+    const jumped = valid && prev && Math.hypot(px - prev[0], py - prev[1]) > maxJumpPx;
+    if (!valid || jumped) {
+      if (current.length > 1) segments.push(current);
+      current = [];
+      prev = null;
+    }
+    if (valid) {
+      current.push([px, py]);
+      prev = [px, py];
+    }
   }
-  return pts;
+  if (current.length > 1) segments.push(current);
+  return segments;
 }

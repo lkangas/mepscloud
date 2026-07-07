@@ -86,7 +86,7 @@ function initTwilightSvg(grid) {
   twilightSvg.setAttribute('viewBox', `0 0 ${grid.nx} ${grid.ny}`);
   twilightSvg.innerHTML = '';
   for (const band of TWILIGHT_BANDS) {
-    const path = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     path.setAttribute('id', 'twi-' + band.depression);
     path.setAttribute('fill', 'none');
     path.setAttribute('stroke', band.color);
@@ -98,12 +98,15 @@ function initTwilightSvg(grid) {
   }
 }
 
+function segmentsToPathD(segments) {
+  return segments.map(seg => 'M' + seg.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join('L')).join(' ');
+}
+
 function updateTwilight(validTimeIso) {
   const when = new Date(validTimeIso + 'Z');
   for (const band of TWILIGHT_BANDS) {
-    const pts = twilightContourPixels(when, band.depression, manifest.grid);
-    const el = $('twi-' + band.depression);
-    el.setAttribute('points', pts.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' '));
+    const segments = twilightContourSegments(when, band.depression, manifest.grid);
+    $('twi-' + band.depression).setAttribute('d', segmentsToPathD(segments));
   }
 }
 
