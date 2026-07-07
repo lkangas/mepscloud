@@ -29,22 +29,26 @@ from . import config, fetch
 ALT_DISPLAY_MAX_M = 14000
 
 # ---------------------------------------------------------------------------
-# "combined" derived layer: a custom total-cloud rendering that (a) makes the
+# "combined" derived layer: a custom cloud rendering built PURELY from the
+# low/mid/high altitude bands (NOT the MEPS-served total -- the served total
+# has cells where it's cloudy but nothing is classified into a band, which
+# have no defined altitude-hue and would render as black). It (a) makes the
 # clear -> few-percent-cloud edge conspicuous and (b) colour-codes altitude.
-# Opacity = boosted transfer(total) (gamma < 1 lifts thin cloud). Hue = the
-# low/mid/high colours mixed weighted by each layer's fraction RAISED TO A
-# POWER, so the DOMINANT layer wins instead of everything averaging toward the
-# warm low colour (a flat average lets white high cloud never show). Chosen
-# by visual comparison (see session history): bright amber low, yellow mid,
-# white high, power 4, gamma 0.42.
+#
+# Coverage from the three bands = 1-(1-low)(1-mid)(1-high) (random-overlap
+# combine). Opacity = boosted transfer(coverage) (gamma < 1 lifts thin cloud).
+# Hue = the low/mid/high colours mixed weighted by each layer's fraction
+# RAISED TO A POWER, so the DOMINANT layer wins instead of everything
+# averaging toward the warm low colour (a flat average lets white high cloud
+# never show). Chosen by visual comparison (see session history): bright amber
+# low, yellow mid, white high, power 4, gamma 0.42.
 COMBINED_LOW_RGB = (255, 154, 46)    # #ff9a2e
 COMBINED_MID_RGB = (255, 225, 77)    # #ffe14d
 COMBINED_HIGH_RGB = (255, 255, 255)  # white
 COMBINED_POWER = 4.0
 COMBINED_GAMMA = 0.42
-COMBINED_DEAD = 0.01                 # <1% total reads as clear (fully transparent)
+COMBINED_DEAD = 0.01                 # <1% coverage reads as clear (fully transparent)
 COMBINED_INPUTS = (
-    "cloud_area_fraction",              # total (opacity)
     "low_type_cloud_area_fraction",
     "medium_type_cloud_area_fraction",
     "high_type_cloud_area_fraction",
@@ -65,21 +69,22 @@ def _to_display_png(arr2d: np.ndarray, is_metres: bool) -> Image.Image:
     return Image.fromarray(la, mode="LA")
 
 
-def _combined_rgba(low, mid, high, total) -> np.ndarray:
-    """One timestep of the combined layer -> north-up RGBA uint8. Inputs are
-    uint8 (0-255) 2-D arrays, south->north (flipped at the end like _to_display_png)."""
+def _combined_rgba(low, mid, high) -> np.ndarray:
+    """One timestep of the combined layer -> north-up RGBA uint8, built only
+    from the three altitude bands. Inputs are uint8 (0-255) 2-D arrays,
+    south->north (flipped at the end like _to_display_png)."""
     lo = low.astype(np.float32) / 255.0
     mi = mid.astype(np.float32) / 255.0
     hi = high.astype(np.float32) / 255.0
-    tot = total.astype(np.float32) / 255.0
     wl, wm, wh = lo ** COMBINED_POWER, mi ** COMBINED_POWER, hi ** COMBINED_POWER
     s = wl + wm + wh + 1e-6
     rgb = (wl[..., None] * np.array(COMBINED_LOW_RGB, np.float32)
            + wm[..., None] * np.array(COMBINED_MID_RGB, np.float32)
            + wh[..., None] * np.array(COMBINED_HIGH_RGB, np.float32)) / s[..., None]
-    t = np.clip((tot - COMBINED_DEAD) / (1 - COMBINED_DEAD), 0, 1)
+    coverage = 1.0 - (1.0 - lo) * (1.0 - mi) * (1.0 - hi)  # random-overlap total from bands
+    t = np.clip((coverage - COMBINED_DEAD) / (1 - COMBINED_DEAD), 0, 1)
     alpha = t ** COMBINED_GAMMA
-    rgba = np.empty((*tot.shape, 4), dtype=np.uint8)
+    rgba = np.empty((*lo.shape, 4), dtype=np.uint8)
     rgba[..., :3] = np.clip(rgb, 0, 255).astype(np.uint8)
     rgba[..., 3] = np.clip(alpha * 255, 0, 255).astype(np.uint8)
     return np.flipud(rgba)
@@ -89,12 +94,11 @@ def _write_combined_frames(inputs: dict, out_dir: Path) -> Path:
     """inputs maps COMBINED_INPUTS names -> full [t,ny,nx] uint8 arrays."""
     var_dir = out_dir / "combined"
     var_dir.mkdir(exist_ok=True)
-    total = inputs["cloud_area_fraction"]
     low = inputs["low_type_cloud_area_fraction"]
     mid = inputs["medium_type_cloud_area_fraction"]
     high = inputs["high_type_cloud_area_fraction"]
-    for ti in range(total.shape[0]):
-        rgba = _combined_rgba(low[ti], mid[ti], high[ti], total[ti])
+    for ti in range(low.shape[0]):
+        rgba = _combined_rgba(low[ti], mid[ti], high[ti])
         Image.fromarray(rgba, mode="RGBA").save(var_dir / f"{ti:03d}.png")
     return var_dir
 
