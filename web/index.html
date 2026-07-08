@@ -120,10 +120,10 @@
   #chart2 { width:100%; height:auto; display:block; background:#0b0f14;
             border:1px solid var(--line); border-radius:6px; margin-top:14px; }
   .meteo-legend { display:flex; gap:12px; flex-wrap:wrap; font-size:11px; margin-top:6px; }
-  .meteo-legend label { display:inline-flex; align-items:center; gap:5px; color:var(--muted); cursor:pointer; }
+  .meteo-legend label { display:inline-flex; align-items:center; gap:5px; cursor:pointer; }
   .meteo-legend label:has(input:not(:checked)) { opacity:0.45; }
   .meteo-legend input[type=checkbox] { margin:0; width:11px; height:11px; }
-  .meteo-legend i { width:16px; height:3px; border-radius:2px; display:inline-block; }
+  .meteo-legend span { font-weight:700; }
   .meteo-note { font-size:11px; color:var(--muted); margin-top:6px; }
   #lpcRadius { width:44px; background:#21262d; color:var(--fg); border:1px solid var(--line);
                border-radius:6px; padding:3px 5px; font-size:12px; }
@@ -850,7 +850,7 @@ setInterval(updateNowMarkers, 30000);   // keep advancing even without user inte
 window.addEventListener('resize', () => { if (manifest) updateNowMarkers(); });   // keep the pixel-based slider tick correct across viewport changes
 function buildMeteoLegend() {
   $('meteoLegend').innerHTML = METEO_SERIES.map((s, i) =>
-    `<label><input type="checkbox" data-idx="${i}"${s.visible ? ' checked' : ''}><i style="background:${s.color}"></i>${s.label}</label>`
+    `<label><input type="checkbox" data-idx="${i}"${s.visible ? ' checked' : ''}><span style="color:${s.color}">${s.label}</span></label>`
   ).join('');
   $('meteoLegend').querySelectorAll('input[type=checkbox]').forEach(cb => {
     cb.onchange = e => {
