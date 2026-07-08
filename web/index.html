@@ -186,11 +186,13 @@
         <button id="preload" title="Preload every frame for smooth scrubbing/animation">⤓ Preload</button>
         <button id="zoom" title="Zoom the map in around the marker">⤢ Zoom</button>
         <!-- TEMPORARY: for picking which overlay/roads resolution variant to
-             actually use at 5x zoom. Remove once decided. -->
-        <select id="overlayQuality" title="Overlay/roads asset (zoom in to compare)">
-          <option value="">Overlay: current (low-res)</option>
-          <option value="A_scaled">Overlay: hi-res A (scaled width)</option>
-          <option value="B_fixed">Overlay: hi-res B (fixed width)</option>
+             actually use at 5x zoom. Remove once decided. Applies ONLY while
+             zoomed -- always plain low-res when not zoomed (applyOverlayAsset). -->
+        <select id="overlayQuality" title="Overlay/roads asset used WHILE ZOOMED (always low-res otherwise)">
+          <option value="">Overlay: none (low-res even zoomed)</option>
+          <option value="A_scaled">Overlay: hi-res A (5px, scaled width)</option>
+          <option value="C_mid">Overlay: hi-res C (3px, middle)</option>
+          <option value="B_fixed">Overlay: hi-res B (1px, fixed width)</option>
         </select>
       </div>
       <div id="precipLegend" class="precip-legend" hidden>
@@ -816,14 +818,20 @@ function applyZoom() {
     marker.style.transform = '';
   }
 }
-$('zoom').onclick = () => { zoomOn = !zoomOn; $('zoom').classList.toggle('active', zoomOn); applyZoom(); };
-// TEMPORARY: swap the overlay/roads image source to compare hi-res variants
-// while zoomed in, see above.
-$('overlayQuality').onchange = e => {
-  const tag = e.target.value;
-  overlay.src = tag ? `static/hires_test/overlay_${tag}.png` : 'static/overlay.png';
-  $('roads').src = tag ? `static/hires_test/roads_${tag}.png` : 'static/roads.png';
-};
+$('zoom').onclick = () => { zoomOn = !zoomOn; $('zoom').classList.toggle('active', zoomOn); applyZoom(); applyOverlayAsset(); };
+// TEMPORARY: compare hi-res overlay/roads variants, see the <select> above.
+// The chosen variant applies ONLY while zoomed -- zooming back out always
+// reverts to the plain low-res assets (a hi-res image downsampled back to
+// on-screen size looks worse than the low-res one, purpose-built for that
+// size: variant B's near-1px-in-a-5x-image lines in particular go closer to
+// invisible once shrunk back down).
+let overlayVariant = '';
+function applyOverlayAsset() {
+  const useHiRes = zoomOn && overlayVariant;
+  overlay.src = useHiRes ? `static/hires_test/overlay_${overlayVariant}.png` : 'static/overlay.png';
+  $('roads').src = useHiRes ? `static/hires_test/roads_${overlayVariant}.png` : 'static/roads.png';
+}
+$('overlayQuality').onchange = e => { overlayVariant = e.target.value; applyOverlayAsset(); };
 
 // point source: the dropdown picks My location / Komakallio / Räyskälä /
 // Manual, remembered in localStorage. Default is Komakallio (NO geolocation

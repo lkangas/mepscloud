@@ -79,9 +79,17 @@ def main():
     borders = bco.native_lines("cultural", "admin_0_boundary_lines_land")
     by_class = bco.road_lines_by_class(bco.FINLAND_BBOX)
 
+    # lw_points for a TARGET output pixel width w (at hires_dpi): w * 72/hires_dpi,
+    # equivalently bco.LINE_PX * (w / ZOOM_K) since bco.LINE_PX is the 1px-at-base-dpi
+    # points value. w=ZOOM_K (5px) = variant A; w=1 (1px) = variant B; w=3 is the
+    # requested middle ground.
+    def lw_for_px(w):
+        return bco.LINE_PX * (w / ZOOM_K)
+
     variants = {
-        "A_scaled": bco.LINE_PX,               # same points as base -> proportionally same, crisper
-        "B_fixed":  bco.LINE_PX / ZOOM_K,       # same ABSOLUTE px as base -> relatively thinner
+        "A_scaled": lw_for_px(ZOOM_K),   # 5px -- same points as base -> proportionally same, crisper
+        "B_fixed":  lw_for_px(1),        # 1px -- same ABSOLUTE px as base -> relatively thinner
+        "C_mid":    lw_for_px(3),        # 3px -- midpoint between A and B
     }
     for tag, lw in variants.items():
         print(f"[hires] variant {tag}: lw={lw:.4f}pt")
