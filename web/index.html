@@ -606,7 +606,7 @@ function drawChart(series) {
   }
   s += `<line id="chartNow" x1="0" y1="${CH.padT}" x2="0" y2="${CH.H - CH.padB}" stroke="#3fb950" stroke-width="1.2" stroke-dasharray="3,2" opacity="0.85"/>`;
   s += `<text id="chartNowLabel" y="${CH.padT + 9}" fill="#3fb950" font-size="9">now</text>`;
-  s += `<line id="chartCursor" x1="0" y1="${CH.padT}" x2="0" y2="${CH.H - CH.padB}" stroke="var(--accent)" stroke-width="1" opacity="0.9"/>`;
+  s += `<line id="chartCursor" x1="0" y1="0" x2="0" y2="${CH.H - CH.padB}" stroke="var(--accent)" stroke-width="1" opacity="0.9"/>`;
   chart.innerHTML = s;
   updateChartCursor(idx);
   updateNowMarkers();
