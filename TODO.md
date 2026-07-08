@@ -3,6 +3,33 @@
 Backlog of features not yet built. Nearer-term design context lives in the
 git history and commit messages.
 
+## Precip: a contour outline around the wet area, not new colors
+
+The precip colourmap's low (light-rain) end is annoyingly close to the
+chosen sea colour, but changing either is off the table: the sea colour
+was already carefully tuned against the cloud-layer colours, and re-tuning
+one would throw off that whole earlier optimisation. So — don't touch
+colours. Instead, draw a single **contour outline** enclosing every
+nonzero-precip pixel, in the same teal as the coastline/border/road overlay
+(`tools/build_coastline_overlay.py`'s `COAST_COLOR = "#2ec4b6"`), so even
+faint rain stays visible by its EDGE against the ground or cloud, whatever
+colour is directly under it.
+
+- "Nonzero" = the same wet/dry boundary the precip alpha fade already uses:
+  `rate > PRECIP_DRY_LO` (0.05 mm/h) in `render.py`, i.e. anywhere precip
+  alpha is above 0.
+- "A single contour... enclosing every signal" doesn't need true vector
+  contour-tracing (marching squares) — a binary wet-mask + simple
+  neighbour-difference boundary detection (mark a wet pixel as "edge" if any
+  4-neighbour is dry) is much simpler, and naturally handles several
+  disconnected rain cells correctly (each gets its own outline), matching
+  "single contour" as "one classification pass", not literally one polygon.
+- New backend-rendered layer (own PNG dir per frame, teal stroke on
+  transparent, 1px at native res — the precip layer is at cloud-frame
+  resolution, not the 5x zoomed overlay), composited above the precip
+  colourmap in the viewer as its own toggle (Overlays menu), not baked into
+  the existing precip RGBA frames.
+
 ## Meteogram (point time series) — next passes
 
 Shipped (see git): draggable marker + geolocation + point-source picker
