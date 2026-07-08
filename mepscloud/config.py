@@ -83,6 +83,37 @@ PRECIP_VARS = (PRECIP_ACC_VAR, PRECIP_TYPE_VAR, PRECIP_TEMP_VAR)
 # point of this app, not just a "tonight" snapshot.
 
 # ---------------------------------------------------------------------------
+# w* (Deardorff convective velocity scale) -- boundary-layer "stirring
+# strength", relevant to daytime thermals/seeing. Read independently of the
+# precip vars above (a second, separate chunked pass, including its own
+# air_temperature_2m read) rather than threading PRECIP_TEMP_VAR's already-
+# fetched array through -- keeps the two unrelated derived-product code
+# paths decoupled at the cost of one extra ~270MB transient read per run.
+#
+# w* = [ (g/theta_v) * (H/(rho*cp)) * zi ]^(1/3) where H>0 (unstable), else 0.
+# Two variants, computed side by side: "approx" uses T2m directly as
+# theta_v and a constant air density; "exact" uses the real virtual
+# potential temperature (via surface_air_pressure + specific_humidity_2m)
+# and real density from the ideal gas law. The physics constants below are
+# used by fetch.iter_wstar_frames (which does the actual computation) --
+# they live here, not in render.py, because render.py imports fetch.py, so
+# fetch.py can't import render.py's constants back without a cycle.
+# render.py has its own WSTAR_MAX/WSTAR_ALPHA for *display* encoding only
+# (clip ceiling, map opacity) -- not physics, so no cycle there.
+# ---------------------------------------------------------------------------
+WSTAR_H_VAR = "SFX_H"                                  # W/m^2, (time, y, x) -- NOTE: no vertical dim, unlike every other var here
+WSTAR_ZI_VAR = "atmosphere_boundary_layer_thickness"   # m
+WSTAR_T2M_VAR = "air_temperature_2m"                   # K (independent read, not threaded from PRECIP_TEMP_VAR)
+WSTAR_PSFC_VAR = "surface_air_pressure"                # Pa, exact variant only
+WSTAR_Q2M_VAR = "specific_humidity_2m"                 # kg/kg, exact variant only
+WSTAR_VARS = (WSTAR_H_VAR, WSTAR_ZI_VAR, WSTAR_T2M_VAR, WSTAR_PSFC_VAR, WSTAR_Q2M_VAR)
+
+WSTAR_G = 9.81         # m/s^2
+WSTAR_CP = 1005.0      # J/(kg*K)
+WSTAR_RD = 287.05      # J/(kg*K), dry air gas constant -- exact variant's rho
+WSTAR_RHO_APPROX = 1.2  # kg/m^3, constant air density -- approx variant's rho
+
+# ---------------------------------------------------------------------------
 # Site of interest (deferred meteogram feature — kept here for later).
 # ---------------------------------------------------------------------------
 KOMAKALLIO = (60.2415, 24.3349)  # (lat, lon)

@@ -190,6 +190,83 @@ def precip_full(ds: netCDF4.Dataset):
     return rate, ptype, t2m
 
 
+def iter_wstar_frames(ds: netCDF4.Dataset):
+    """Yield (ti, w_approx_2d, w_exact_2d, h_2d) for each forecast frame,
+    streamed in FETCH_CHUNK blocks (bounded memory, like iter_precip_frames).
+
+    w* = [ (g/theta_v) * (H/(rho*cp)) * zi ]^(1/3) where H>0 (unstable),
+    else exactly 0 (a stable/nocturnal boundary layer has zero convective
+    velocity -- this is the correct physical value, not "missing data").
+    See config.py's w* section for the constants and the two variants:
+
+    - approx: theta_v = T2m directly (no barometric/humidity correction),
+      rho = a constant (WSTAR_RHO_APPROX).
+    - exact: theta_v from the real virtual potential temperature (T2m,
+      surface_air_pressure, specific_humidity_2m) and rho from the ideal
+      gas law using the same p_sfc/T2m -- real density, not just real
+      theta_v, since the inputs are already being fetched for free.
+
+    h_2d (raw SFX_H) is yielded alongside so callers can gate a map layer's
+    alpha on H>0 without re-deriving it from w_approx>0 (equivalent today,
+    but couples two independent pieces of logic for no reason).
+
+    Reads five surface variables. air_temperature_2m is read again here
+    even though iter_precip_frames already reads it for the phase fallback
+    -- an independent pass, not threaded through, per config.py's w*
+    section (keeps the two derived-product code paths decoupled).
+    """
+    h_var = ds.variables[config.WSTAR_H_VAR]      # [t,ny,nx] -- no vertical dim, unlike the rest
+    zi_var = ds.variables[config.WSTAR_ZI_VAR]     # [t,1,ny,nx]
+    t2m_var = ds.variables[config.WSTAR_T2M_VAR]   # [t,1,ny,nx]
+    psfc_var = ds.variables[config.WSTAR_PSFC_VAR]  # [t,1,ny,nx]
+    q2m_var = ds.variables[config.WSTAR_Q2M_VAR]   # [t,1,ny,nx]
+    n_time = h_var.shape[0]
+    for lo in range(0, n_time, FETCH_CHUNK):
+        hi = min(lo + FETCH_CHUNK, n_time)
+        h = np.ma.filled(h_var[lo:hi, :, :], np.nan).astype(np.float32)
+        zi = np.ma.filled(zi_var[lo:hi, 0, :, :], np.nan).astype(np.float32)
+        t2m = np.ma.filled(t2m_var[lo:hi, 0, :, :], np.nan).astype(np.float32)
+        p_sfc = np.ma.filled(psfc_var[lo:hi, 0, :, :], np.nan).astype(np.float32)
+        q2m = np.ma.filled(q2m_var[lo:hi, 0, :, :], np.nan).astype(np.float32)
+
+        unstable = h > 0
+
+        # approx: theta_v = T2m, rho = constant
+        w_approx = np.where(
+            unstable,
+            np.cbrt((config.WSTAR_G / t2m) * (h / (config.WSTAR_RHO_APPROX * config.WSTAR_CP)) * zi),
+            0.0,
+        )
+
+        # exact: real theta_v (barometric + virtual/humidity correction), real rho
+        theta = t2m * (1e5 / p_sfc) ** 0.2854
+        theta_v = theta * (1 + 0.61 * q2m)
+        rho = p_sfc / (config.WSTAR_RD * t2m)
+        w_exact = np.where(
+            unstable,
+            np.cbrt((config.WSTAR_G / theta_v) * (h / (rho * config.WSTAR_CP)) * zi),
+            0.0,
+        )
+
+        w_approx = np.where(np.isfinite(w_approx), w_approx, 0.0)
+        w_exact = np.where(np.isfinite(w_exact), w_exact, 0.0)
+        h_out = np.where(np.isfinite(h), h, 0.0)
+
+        for k in range(hi - lo):
+            yield lo + k, w_approx[k], w_exact[k], h_out[k]
+
+
+def wstar_full(ds: netCDF4.Dataset):
+    """(w_approx, w_exact, h) full [t,ny,nx] arrays for the whole run,
+    assembled from iter_wstar_frames. For the local npz path only; the
+    production render streams frame-by-frame instead."""
+    frames = list(iter_wstar_frames(ds))
+    w_approx = np.stack([f[1] for f in frames])
+    w_exact = np.stack([f[2] for f in frames])
+    h = np.stack([f[3] for f in frames])
+    return w_approx, w_exact, h
+
+
 def fetch_latest_run(force: bool = False) -> Path:
     """Fetch the newest run's full forecast horizon for all cloud variables,
     quantize, and write one npz to the cache. No-ops (returns the existing
@@ -216,6 +293,8 @@ def fetch_latest_run(force: bool = False) -> Path:
         out = dict(iter_quantized_variables(ds))
         print("[fetch]   precipitation (rate + type + 2m temp)")
         precip_rate, precip_ptype, precip_t2m = precip_full(ds)
+        print("[fetch]   w* (approx + exact)")
+        w_star_approx, w_star_exact, w_star_h = wstar_full(ds)
     finally:
         ds.close()
 
@@ -226,6 +305,7 @@ def fetch_latest_run(force: bool = False) -> Path:
         valid_times=np.array([t.isoformat() for t in valid_times]),
         x=x, y=y,
         precip_rate=precip_rate, precip_ptype=precip_ptype, precip_t2m=precip_t2m,
+        w_star_approx=w_star_approx, w_star_exact=w_star_exact, w_star_h=w_star_h,
         **out,
     )
     print(f"[fetch] wrote {path} ({path.stat().st_size / 1e6:.1f} MB)")
