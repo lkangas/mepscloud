@@ -18,12 +18,24 @@ colour is directly under it.
 - "Nonzero" = the same wet/dry boundary the precip alpha fade already uses:
   `rate > PRECIP_DRY_LO` (0.05 mm/h) in `render.py`, i.e. anywhere precip
   alpha is above 0.
-- "A single contour... enclosing every signal" doesn't need true vector
-  contour-tracing (marching squares) — a binary wet-mask + simple
-  neighbour-difference boundary detection (mark a wet pixel as "edge" if any
-  4-neighbour is dry) is much simpler, and naturally handles several
-  disconnected rain cells correctly (each gets its own outline), matching
-  "single contour" as "one classification pass", not literally one polygon.
+- Trace it with a ready-made contour function, not hand-rolled boundary
+  detection: **`contourpy`**, the library matplotlib's own `contour()`
+  actually delegates to internally — same algorithm/quality the user wants,
+  but usable as a lightweight standalone dependency (just the geometry
+  computation) rather than pulling in all of matplotlib. This matters
+  because the production pipeline deliberately has NO
+  matplotlib/cartopy/pyproj today (see `mepscloud/fetch.py`'s docstring —
+  those are tools-only, one-off asset generation, kept out of the always-
+  running updater to keep the deployed image light) and this contour would
+  run every frame, every run (67 × every 3h), not as a one-off. Plan:
+  `contourpy.contour_generator(...).lines(level)` on the rate field (or the
+  binary wet mask) at `PRECIP_DRY_LO` to get the contour path(s) as
+  coordinate arrays, then rasterize those paths onto the frame with PIL's
+  `ImageDraw` (already used for every other frame in this pipeline) — no
+  matplotlib figure/canvas involved at render time. Naturally handles
+  several disconnected rain cells (each gets its own closed path). If this
+  turns out to want full matplotlib after all, revisit the "keep production
+  lean" call before adding the dependency, rather than assuming.
 - New backend-rendered layer (own PNG dir per frame, teal stroke on
   transparent, 1px at native res — the precip layer is at cloud-frame
   resolution, not the 5x zoomed overlay), composited above the precip
