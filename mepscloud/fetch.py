@@ -137,6 +137,59 @@ def iter_quantized_variables(ds: netCDF4.Dataset):
         yield name, _quantize_variable(ds.variables[name], _quantize_metres, False)
 
 
+def iter_precip_frames(ds: netCDF4.Dataset):
+    """Yield (ti, rate_2d, ptype_2d, t2m_2d) for each forecast frame, streamed
+    in FETCH_CHUNK blocks (bounded memory, like iter_quantized_variables):
+
+    - rate_2d  : float32 per-hour precip rate [mm/h], = the accumulated total
+                 differenced against the previous frame (clip <0 -> 0; frame 0
+                 has no previous, so its rate is 0 = "no precip in the last
+                 hour"). MEPS det frames are hourly, so a 1-step diff is mm/h.
+    - ptype_2d : int16 precipitation_type category 0-7 (metno code table),
+                 nearest-neighbour (categorical -- never interpolated); the
+                 field has no "none" code, so wet/dry is decided by rate, not
+                 this. Fill/NaN -> -1 ("unknown"; render resolves via t2m).
+    - t2m_2d   : float32 2 m air temperature [K], used only to pick rain vs
+                 snow where ptype is fill (see render._precip_rgba).
+
+    Reads three surface variables (accumulated total + type + 2 m temp); no
+    giant array is ever held (only the current chunk plus one carried previous
+    accumulation frame)."""
+    acc = ds.variables[config.PRECIP_ACC_VAR]   # [t,1,ny,nx], kg/m^2 accumulated
+    pty = ds.variables[config.PRECIP_TYPE_VAR]  # [t,1,ny,nx], categorical
+    t2m = ds.variables[config.PRECIP_TEMP_VAR]  # [t,1,ny,nx], Kelvin
+    n_time = acc.shape[0]
+    prev = None  # previous frame's accumulated total (one frame, ~4 MB)
+    for lo in range(0, n_time, FETCH_CHUNK):
+        hi = min(lo + FETCH_CHUNK, n_time)
+        acc_block = np.ma.filled(acc[lo:hi, 0, :, :], np.nan).astype(np.float32)
+        pty_block = np.ma.filled(pty[lo:hi, 0, :, :], np.nan).astype(np.float32)
+        t2m_block = np.ma.filled(t2m[lo:hi, 0, :, :], np.nan).astype(np.float32)
+        for k in range(hi - lo):
+            a = acc_block[k]
+            if prev is None:
+                rate = np.zeros_like(a)
+            else:
+                rate = a - prev
+                rate = np.where(np.isfinite(rate), rate, 0.0)
+                np.clip(rate, 0.0, None, out=rate)
+            ptype = np.where(np.isfinite(pty_block[k]),
+                             np.rint(pty_block[k]), -1).astype(np.int16)
+            yield lo + k, rate, ptype, t2m_block[k]
+            prev = a.copy()  # carry just this frame across the chunk boundary
+
+
+def precip_full(ds: netCDF4.Dataset):
+    """(rate, ptype, t2m) full [t,ny,nx] arrays for the whole run, assembled
+    from iter_precip_frames. For the local npz path only (holds the full
+    arrays); the production render streams frame-by-frame instead."""
+    frames = list(iter_precip_frames(ds))
+    rate = np.stack([f[1] for f in frames])
+    ptype = np.stack([f[2] for f in frames])
+    t2m = np.stack([f[3] for f in frames])
+    return rate, ptype, t2m
+
+
 def fetch_latest_run(force: bool = False) -> Path:
     """Fetch the newest run's full forecast horizon for all cloud variables,
     quantize, and write one npz to the cache. No-ops (returns the existing
@@ -161,6 +214,8 @@ def fetch_latest_run(force: bool = False) -> Path:
               f"{len(valid_times)} forecast steps ({valid_times[0].isoformat()} .. "
               f"{valid_times[-1].isoformat()})")
         out = dict(iter_quantized_variables(ds))
+        print("[fetch]   precipitation (rate + type + 2m temp)")
+        precip_rate, precip_ptype, precip_t2m = precip_full(ds)
     finally:
         ds.close()
 
@@ -170,6 +225,7 @@ def fetch_latest_run(force: bool = False) -> Path:
         run_time=run_time.isoformat(),
         valid_times=np.array([t.isoformat() for t in valid_times]),
         x=x, y=y,
+        precip_rate=precip_rate, precip_ptype=precip_ptype, precip_t2m=precip_t2m,
         **out,
     )
     print(f"[fetch] wrote {path} ({path.stat().st_size / 1e6:.1f} MB)")

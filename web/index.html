@@ -75,6 +75,18 @@
     background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:8px 10px;
     display:flex; flex-direction:column; gap:8px; white-space:nowrap; }
   .menu-body label { display:flex; align-items:center; gap:6px; }
+  /* precipitation legend (three phase ramps), shown while precip is toggled on */
+  .precip-legend { margin-top:8px; display:flex; flex-direction:column; gap:3px;
+                   font-size:10px; color:var(--muted); }
+  .precip-legend[hidden] { display:none; }
+  .pl-row { display:flex; align-items:center; gap:6px; }
+  .pl-lbl { width:34px; text-align:right; }
+  .pl-bar { height:9px; width:150px; max-width:40vw; border-radius:2px; border:1px solid var(--line); }
+  .pl-rain { background:linear-gradient(to right,#0189cc,#00868e,#21b876,#69dc67,#d8f31c,
+             #faf505,#fdbd11,#fe7320,#ff5328,#c1220f,#de0d00,#fc1b4b,#f840ff,#fba8ff,#fef9ff); }
+  .pl-frz  { background:linear-gradient(to right,#dc88d2,#9f78ac,#914e97,#87338a,#7e1a7e,#750071); }
+  .pl-snow { background:linear-gradient(to right,#19d0db,#00a8c5,#0093ba,#0080b0,#0065a7,
+             #0054a1,#001789,#010071); }
 </style>
 </head>
 <body>
@@ -85,6 +97,7 @@
       <div id="sea-layer"></div>
       <div id="land-layer"></div>
       <img id="base" alt="cloud layer frame">
+      <img id="precip" alt="precipitation" style="display:none">
       <svg id="twilight-shade" preserveAspectRatio="none" style="position:absolute; inset:0; width:100%; height:100%;"></svg>
       <svg id="twilight-lines" preserveAspectRatio="none" style="position:absolute; inset:0; width:100%; height:100%;"></svg>
       <img id="roads" src="static/roads.png" alt="Finnish roads">
@@ -95,6 +108,7 @@
       <details class="menu">
         <summary>Overlays ▾</summary>
         <div class="menu-body">
+          <label id="precipToggle"><input type="checkbox" id="showPrecip"> precipitation</label>
           <label><input type="checkbox" id="showRoads" checked> roads</label>
           <label><input type="checkbox" id="showOverlay" checked> coastlines</label>
           <label><input type="checkbox" id="showTwilightShade" checked> sun shade</label>
@@ -102,6 +116,11 @@
         </div>
       </details>
       <button id="preload" title="Preload every frame for smooth scrubbing/animation">⤓ Preload</button>
+    </div>
+    <div id="precipLegend" class="precip-legend" hidden>
+      <div class="pl-row"><span class="pl-lbl">Rain</span><span class="pl-bar pl-rain"></span><span>0–25 mm/h</span></div>
+      <div class="pl-row"><span class="pl-lbl">Frz</span><span class="pl-bar pl-frz"></span><span>0–5 mm/h</span></div>
+      <div class="pl-row"><span class="pl-lbl">Snow</span><span class="pl-bar pl-snow"></span><span>0–15 cm/h</span></div>
     </div>
     <div class="controls">
       <button id="play" title="Play/pause">▶</button>
@@ -126,6 +145,7 @@
 <script>
 const $ = id => document.getElementById(id);
 const base = $('base'), overlay = $('overlay'), slider = $('slider'), timeEl = $('time');
+const precip = $('precip');  // precipitation overlay, above clouds / below twilight
 const layerButtons = $('layerButtons');
 const twilightShadeSvg = $('twilight-shade');  // above clouds, below overlay
 const twilightLinesSvg = $('twilight-lines');  // above shade, below overlay
@@ -218,6 +238,7 @@ const LAYER_LABEL = {
   cloud_binary_mask: 'Cloud binary mask',
   cloud_base_altitude: 'Cloud base altitude',
   cloud_top_altitude: 'Cloud top altitude',
+  precip: 'Precipitation (rate + phase)',
 };
 const LAYER_SHORT = {
   combined: 'Custom',
@@ -230,6 +251,7 @@ const LAYER_SHORT = {
   cloud_binary_mask: 'Mask',
   cloud_base_altitude: 'Base',
   cloud_top_altitude: 'Top',
+  precip: 'Precip',
 };
 
 function frameUrl(layer, step) {
@@ -255,6 +277,8 @@ function preloadAllFrames() {
   const urls = [];
   for (const layer of manifest.layers)
     for (let i = 0; i < n; i++) urls.push(frameUrl(layer, i));
+  if (manifest.precip_layer)
+    for (let i = 0; i < n; i++) urls.push(frameUrl(manifest.precip_layer, i));
   let done = 0;
   btn.disabled = true;
   preloadImgs = [];
@@ -293,6 +317,7 @@ function show(i) {
   const n = manifest.valid_times_utc.length;
   idx = (i + n) % n;
   base.src = frameUrl(currentLayer, idx);
+  if (manifest.precip_layer) precip.src = frameUrl(manifest.precip_layer, idx);
   slider.value = idx;
   const validIso = manifest.valid_times_utc[idx];
   timeEl.textContent = fmtHelsinki(validIso);
@@ -311,6 +336,11 @@ $('play').onclick = togglePlay;
 $('prev').onclick = () => { if (playing) togglePlay(); step(-1); };
 $('next').onclick = () => { if (playing) togglePlay(); step(1); };
 $('preload').onclick = preloadAllFrames;
+$('showPrecip').onchange = e => {
+  const on = e.target.checked;
+  precip.style.display = on ? 'block' : 'none';
+  $('precipLegend').hidden = !on;
+};
 $('showRoads').onchange = e => { $('roads').style.display = e.target.checked ? 'block' : 'none'; };
 $('showOverlay').onchange = e => { overlay.style.display = e.target.checked ? 'block' : 'none'; };
 $('showTwilightShade').onchange = e => {
@@ -456,6 +486,11 @@ function applyManifest(man) {
   slider.max = man.valid_times_utc.length - 1;
   initTwilightSvg(man.grid);
   if (firstLoad || layerButtons.children.length === 0) buildLayerButtons(man.layers);
+  // precip overlay availability: hide the toggle (and force it off) if this
+  // run has no precip frames; otherwise keep the user's current on/off choice.
+  const hasPrecip = !!man.precip_layer;
+  $('precipToggle').style.display = hasPrecip ? 'flex' : 'none';
+  if (!hasPrecip) { $('showPrecip').checked = false; precip.style.display = 'none'; $('precipLegend').hidden = true; }
   idx = Math.min(idx, man.valid_times_utc.length - 1);
   show(idx);
   if (runChanged) { $('err').textContent = ''; resetPreload(); }  // preloaded frames were the old run

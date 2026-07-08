@@ -62,8 +62,9 @@ COMBINED_INPUTS = (
 )
 
 
-# Processing order = fetch order (raw MEPS vars) then the derived combined.
-STATUS_PRODUCTS = list(config.CLOUD_VARS) + ["combined"]
+# Processing order = fetch order (raw MEPS vars), the derived combined, then
+# the precipitation overlay (derived from precip rate + type, see below).
+STATUS_PRODUCTS = list(config.CLOUD_VARS) + ["combined", "precip"]
 
 
 def _now() -> str:
@@ -260,6 +261,122 @@ def _write_combined_frames(inputs: dict, out_dir: Path, on_frame=None) -> Path:
     return var_dir
 
 
+# ---------------------------------------------------------------------------
+# "precip" derived overlay: weatherinfo.fi-style precipitation, drawn OVER the
+# cloud layer. Intensity = the per-hour rate (fetch.iter_precip_frames diffs
+# the accumulated total); phase = the model's precipitation_type category,
+# mapped to one of three colour ramps sampled pixel-for-pixel from
+# weatherinfo.fi's FMI-MEPS render (see tools/weatherinfo_precip_palette.json):
+#   rain      (mm/h, 0..25): blue->green->yellow->red->magenta->white
+#   freezing  (mm/h, 0..5):  violet ramp
+#   snow      (cm/h, 0..15): light-cyan->deep-blue ramp
+# precipitation_type has no "none" code, so wet/dry is decided by the rate
+# (alpha), not the type. Snow is shown as depth: cm = mm_water * SLR/10.
+PRECIP_RAIN_STOPS = (
+    "#0189cc", "#005bb8", "#00868e", "#21b876", "#69dc67", "#d8f31c",
+    "#faf505", "#faf20c", "#fdbd11", "#fe9d16", "#fe8d1a", "#fe7320",
+    "#fe6324", "#ff5328", "#de371b", "#c1220f", "#de0d00", "#fe1216",
+    "#fc1b4b", "#fb257f", "#f933d2", "#f840ff", "#f969ff", "#fba8ff",
+    "#fdd0ff", "#fef9ff",
+)
+PRECIP_FRZ_STOPS = (
+    "#dc88d2", "#bb89c1", "#9f78ac", "#9967a3", "#955b9e", "#914e97",
+    "#8c4291", "#87338a", "#832683", "#7e1a7e", "#790b76", "#750071",
+)
+PRECIP_SNOW_STOPS = (
+    "#19d0db", "#14c9d6", "#0dbdd0", "#05b2cb", "#00a8c5", "#009dbf",
+    "#0093ba", "#008bb6", "#0080b0", "#0075ac", "#0065a7", "#0054a1",
+    "#003196", "#001789", "#000c7f", "#010071",
+)
+PRECIP_RAIN_MAX = 25.0   # mm/h at the top of the rain ramp
+PRECIP_FRZ_MAX = 5.0     # mm/h at the top of the freezing-rain ramp
+PRECIP_SNOW_MAX = 15.0   # cm/h at the top of the snow ramp
+PRECIP_SLR = 10.0        # snow-to-liquid ratio: snow_depth_cm = mm_water * SLR/10
+PRECIP_DRY_LO = 0.05     # mm/h: below -> fully transparent (dry)
+PRECIP_DRY_HI = 0.20     # mm/h: at/above -> full precip opacity (fade-in between)
+PRECIP_ALPHA = 0.90      # opacity of established precip (radar look, slightly see-through)
+PRECIP_SNOW_T_K = 273.65  # 2 m temp below which fill-phase precip is drawn as snow (~0.5C)
+
+
+def _hex_rgb(h: str):
+    return tuple(int(h[i:i + 2], 16) for i in (1, 3, 5))
+
+
+def _build_lut(stops, n: int = 256) -> np.ndarray:
+    """Linear-interpolate the low->high colour stops into an (n,3) uint8 LUT."""
+    cols = np.array([_hex_rgb(s) for s in stops], dtype=np.float32)
+    xs = np.linspace(0.0, 1.0, len(cols))
+    grid = np.linspace(0.0, 1.0, n)
+    lut = np.stack([np.interp(grid, xs, cols[:, c]) for c in range(3)], axis=1)
+    return np.clip(np.rint(lut), 0, 255).astype(np.uint8)
+
+
+PRECIP_RAIN_LUT = _build_lut(PRECIP_RAIN_STOPS)
+PRECIP_FRZ_LUT = _build_lut(PRECIP_FRZ_STOPS)
+PRECIP_SNOW_LUT = _build_lut(PRECIP_SNOW_STOPS)
+
+# precipitation_type category -> ramp (metno code table 0..7):
+#   0 drizzle, 1 rain                         -> rain
+#   4 freezing drizzle, 5 freezing rain       -> freezing
+#   2 sleet, 3 snow, 6 graupel, 7 hail        -> snow
+_PRECIP_FRZ_CODES = (4, 5)
+_PRECIP_SNOW_CODES = (2, 3, 6, 7)
+
+
+def _lut_index(value: np.ndarray, vmax: float, n: int = 256) -> np.ndarray:
+    pos = np.clip(value / vmax, 0.0, 1.0)
+    return np.rint(pos * (n - 1)).astype(np.intp)
+
+
+def _precip_rgba(rate: np.ndarray, ptype: np.ndarray, t2m: np.ndarray) -> np.ndarray:
+    """One timestep of the precip overlay -> north-up RGBA uint8.
+    rate: float32 [ny,nx] mm/h (per-hour water-equiv). ptype: int16 [ny,nx]
+    precipitation_type category (fetch.iter_precip_frames; -1 = unknown/fill).
+    t2m: float32 [ny,nx] 2 m temp (K) -- resolves rain vs snow for fill pixels,
+    where the instantaneous type is undefined but the hour still accumulated."""
+    rate = rate.astype(np.float32, copy=False)
+    ny, nx = rate.shape
+    unknown = ptype < 0  # fill: not classified at the tick -> decide by temp
+    cold = np.asarray(t2m) < PRECIP_SNOW_T_K
+    is_frz = np.isin(ptype, _PRECIP_FRZ_CODES)  # freezing only from explicit model codes
+    is_snow = np.isin(ptype, _PRECIP_SNOW_CODES) | (unknown & cold)
+    is_rain = ~(is_frz | is_snow)  # known rain/drizzle, plus warm-or-unknown fallback
+    rgb = np.zeros((ny, nx, 3), dtype=np.uint8)
+    ir = _lut_index(rate, PRECIP_RAIN_MAX)
+    rgb[is_rain] = PRECIP_RAIN_LUT[ir[is_rain]]
+    iz = _lut_index(rate, PRECIP_FRZ_MAX)
+    rgb[is_frz] = PRECIP_FRZ_LUT[iz[is_frz]]
+    isn = _lut_index(rate * (PRECIP_SLR / 10.0), PRECIP_SNOW_MAX)
+    rgb[is_snow] = PRECIP_SNOW_LUT[isn[is_snow]]
+    alpha = np.clip((rate - PRECIP_DRY_LO) / (PRECIP_DRY_HI - PRECIP_DRY_LO), 0.0, 1.0) * PRECIP_ALPHA
+    rgba = np.empty((ny, nx, 4), dtype=np.uint8)
+    rgba[..., :3] = rgb
+    rgba[..., 3] = np.clip(np.rint(alpha * 255), 0, 255).astype(np.uint8)
+    return np.flipud(rgba)
+
+
+def _write_precip_frames(ds, out_dir: Path, on_frame=None) -> Path:
+    """Stream the precip overlay straight from the open OPeNDAP dataset."""
+    var_dir = out_dir / "precip"
+    var_dir.mkdir(exist_ok=True)
+    for ti, rate, ptype, t2m in fetch.iter_precip_frames(ds):
+        Image.fromarray(_precip_rgba(rate, ptype, t2m), mode="RGBA").save(var_dir / f"{ti:03d}.png")
+        if on_frame:
+            on_frame(ti)
+    return var_dir
+
+
+def _write_precip_frames_arrays(rate, ptype, t2m, out_dir: Path, on_frame=None) -> Path:
+    """Write the precip overlay from full [t,ny,nx] arrays (local npz path)."""
+    var_dir = out_dir / "precip"
+    var_dir.mkdir(exist_ok=True)
+    for ti in range(rate.shape[0]):
+        Image.fromarray(_precip_rgba(rate[ti], ptype[ti], t2m[ti]), mode="RGBA").save(var_dir / f"{ti:03d}.png")
+        if on_frame:
+            on_frame(ti)
+    return var_dir
+
+
 def _frames_dir(run_time: dt.datetime) -> Path:
     return config.CACHE_DIR / "frames" / f"{run_time:%Y%m%dT%H%MZ}"
 
@@ -278,7 +395,8 @@ def _write_frames(name: str, quantized: np.ndarray, out_dir: Path, on_frame=None
     return var_dir
 
 
-def _write_manifest(run_time: dt.datetime, valid_times, x, y, layers: list[str]) -> dict:
+def _write_manifest(run_time: dt.datetime, valid_times, x, y, layers: list[str],
+                    precip: bool = False) -> dict:
     manifest = {
         "run_utc": run_time.isoformat(),
         "valid_times_utc": [t.isoformat() for t in valid_times],
@@ -286,6 +404,10 @@ def _write_manifest(run_time: dt.datetime, valid_times, x, y, layers: list[str])
                  "x_min": float(x.min()), "x_max": float(x.max()),
                  "y_min": float(y.min()), "y_max": float(y.max())},
         "layers": layers,
+        # precip is an independent overlay (its own toggle, stacked above the
+        # cloud layer), NOT one of the switchable base layers -- kept out of
+        # `layers` so it never becomes a layer button. Shares the template.
+        "precip_layer": "precip" if precip else None,
         "frame_url_template": f"frames/{run_time:%Y%m%dT%H%MZ}/{{layer}}/{{step:03d}}.png",
     }
     (config.CACHE_DIR / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -339,15 +461,28 @@ def render_latest_run(force: bool = False) -> dict:
         status.write()
         cdir = _write_combined_frames(combined_inputs, out_dir,
                                       on_frame=lambda ti: (status.mark_processed("combined", ti), status.write_throttled()))
+        status.write()
         status.log_processed("combined")
+        print(f"[render]   combined: {len(valid_times)} frames -> {cdir}")
+        combined_inputs.clear()  # free the 4 held band arrays (~272MB) before precip
+
+        # precip overlay: streamed straight from the still-open dataset (2 more
+        # surface vars, differenced/categorised in fetch.iter_precip_frames).
+        status.mark_fetched("precip")
+        status.write()
+        pdir = _write_precip_frames(ds, out_dir,
+                                    on_frame=lambda ti: (status.mark_processed("precip", ti), status.write_throttled()))
+        status.write()
+        status.log_processed("precip")
+        print(f"[render]   precip: {len(valid_times)} frames -> {pdir}")
+
         status.mark_done()
         status.write()
-        print(f"[render]   combined: {len(valid_times)} frames -> {cdir}")
     finally:
         ds.close()
 
     layers = ["combined"] + layers  # derived layer first = viewer default
-    manifest = _write_manifest(run_time, valid_times, x, y, layers)
+    manifest = _write_manifest(run_time, valid_times, x, y, layers, precip=True)
     print(f"[render] wrote {config.CACHE_DIR / 'manifest.json'}")
     _prune_old_frame_dirs(keep=out_dir)
     return manifest
@@ -387,13 +522,25 @@ def render_from_npz(npz_path: Path, force: bool = True) -> dict:
         status.write()
         cdir = _write_combined_frames({k: z[k] for k in COMBINED_INPUTS}, out_dir,
                                       on_frame=lambda ti: (status.mark_processed("combined", ti), status.write_throttled()))
-        status.log_processed("combined")
-        status.mark_done()
         status.write()
+        status.log_processed("combined")
         print(f"[render]   combined: {len(valid_times)} frames -> {cdir}")
 
+        has_precip = "precip_rate" in z
+        if has_precip:
+            status.mark_fetched("precip")
+            status.write()
+            pdir = _write_precip_frames_arrays(z["precip_rate"], z["precip_ptype"], z["precip_t2m"], out_dir,
+                                               on_frame=lambda ti: (status.mark_processed("precip", ti), status.write_throttled()))
+            status.write()
+            status.log_processed("precip")
+            print(f"[render]   precip: {len(valid_times)} frames -> {pdir}")
+
+        status.mark_done()
+        status.write()
+
     layers = ["combined"] + layers  # derived layer first = viewer default
-    manifest = _write_manifest(run_time, valid_times, x, y, layers)
+    manifest = _write_manifest(run_time, valid_times, x, y, layers, precip=has_precip)
     print(f"[render] wrote {config.CACHE_DIR / 'manifest.json'}")
     _prune_old_frame_dirs(keep=out_dir)
     return manifest

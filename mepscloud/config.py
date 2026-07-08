@@ -59,6 +59,25 @@ CLOUD_VARS_METRES = (
 )
 CLOUD_VARS = CLOUD_VARS_FRACTION + CLOUD_VARS_METRES
 
+# ---------------------------------------------------------------------------
+# Precipitation. Handled separately from the cloud vars (not a fraction, not a
+# metres field): the displayed *intensity* is the per-hour rate obtained by
+# differencing the accumulated total between consecutive (hourly) frames, and
+# the *phase* (rain / freezing rain / snow, weatherinfo.fi-style) comes from
+# the model's categorical precipitation_type field. Both are surface fields in
+# meps_det_sfc. See render.py for the phase->ramp mapping and the palette.
+# ---------------------------------------------------------------------------
+PRECIP_ACC_VAR = "precipitation_amount_acc"   # accumulated total precip, kg/m^2 (= mm water)
+PRECIP_TYPE_VAR = "precipitation_type"        # categorical 0-7 (metno code table, see render.py)
+# precipitation_type is INSTANTANEOUS (the phase at the frame tick) while the
+# rate is the accumulation over the preceding hour, so a pixel that precipitated
+# earlier in the hour but is dry at the tick has a rate but a fill/"unknown"
+# type (~1/3 of wet pixels, confirmed both summer & winter). For those we fall
+# back to 2 m temperature to pick rain vs snow -- otherwise winter snow would
+# render as rain. precipitation_type stays the primary classifier.
+PRECIP_TEMP_VAR = "air_temperature_2m"        # screen temperature (K), fill-phase fallback
+PRECIP_VARS = (PRECIP_ACC_VAR, PRECIP_TYPE_VAR, PRECIP_TEMP_VAR)
+
 # Forecast horizon: fetch/cache the entire extent of what the run publishes
 # (67 hourly steps as of this writing) -- exploring the full horizon is the
 # point of this app, not just a "tonight" snapshot.
