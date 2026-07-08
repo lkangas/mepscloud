@@ -900,6 +900,13 @@ async function doLpcSample() {
     lpcSampling = false; updateBusyMarker();
     return;
   }
+  // w_star_map's alpha is a constant opacity (0 or ~WSTAR_ALPHA*255, see
+  // render.py _wstar_map_rgba) -- magnitude lives in its turbo RGB, not
+  // alpha, same "no single value in alpha" problem as combined. Unlike
+  // combined there's no button for its raw counterpart to click instead
+  // (w_star_raw is meteogram-only), so redirect the pixel reads there
+  // rather than disabling the chart for Thermals entirely.
+  const readKey = key === 'w_star_map' ? 'w_star_raw' : key;
   setChartBusy(chart2);
   await nextPaint();   // let the dim + marker pulse render before the (radius-dependent, heavier) readback
   const run = manifest.run_utc;
@@ -926,7 +933,7 @@ async function doLpcSample() {
   bcanvas.width = bw; bcanvas.height = bh;
   const bctx = bcanvas.getContext('2d', { willReadFrequently: true });
 
-  const imgs = await Promise.all(Array.from({ length: n }, (_, i) => loadFrame(frameUrl(key, i)).catch(() => null)));
+  const imgs = await Promise.all(Array.from({ length: n }, (_, i) => loadFrame(frameUrl(readKey, i)).catch(() => null)));
   if (manifest.run_utc !== run || currentLayer !== key) { lpcSampling = false; updateBusyMarker(); doLpcSample(); return; }   // handover or layer switch mid-sample
 
   const series = offsets.map(() => new Array(n).fill(null));
