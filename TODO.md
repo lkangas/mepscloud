@@ -25,6 +25,46 @@ a matching hi-res overlay/roads render. Backlog:
   extends directly — same trick, phase-filtered on the other two branches of
   the precip classification instead of is_rain).
 
+## Product explorer: every MEPS variable, local-only one-off tool
+
+A completely separate, stripped-down tool to browse every product in
+`meps_det_sfc` (see `docs/meps_det_sfc-variables.md`), not just the curated
+cloud/precip layers the main app tracks. **Local-only** (runs on my machine,
+served locally, no VPS/deployment) and **manually triggered** (not a poll
+loop) — decided over building it live on petzval or as a new repo, since it's
+one-off exploratory use, not a maintained app, and ~194 variables' worth of
+frames is multiple GB (vs. the main app's <1GB for ~11 layers).
+
+Design (confirmed live against the dataset, not guessed):
+
+- Of the ~195 data variables, only `icing_index` has real multi-level
+  structure (10 levels) — every other one is a plain `(time, [1], y, x)`
+  field, the same shape the main pipeline already handles. Skip
+  `icing_index`, render the other ~194.
+- No fixed physical range makes sense across such heterogeneous fields
+  (temperature, pressure, wind, radiation, …), unlike the main app's cloud
+  fractions (0–1) or altitudes (fixed ceiling). Auto-normalise each variable
+  to **its own** min/max across the whole fetched run, alpha-encode 0–255
+  against that (white RGB, matching the existing LA-PNG display trick) — not
+  comparable in absolute terms across variables/runs, fine for exploring one
+  variable's spatial/temporal shape. A later pass could pin down real
+  physical ranges and proper colormaps (viridis, turbo, …) for variables
+  worth a closer look — explicitly deferred, not part of this first pass.
+- Viewer: everything fancy stripped out. Time slider, a product picker
+  (dropdown — too many for a button row; group by `main` vs `SFX_*`), the
+  same land/sea + coastline underlay (reuse `web/static/` assets by relative
+  path, no duplication). No fetch/status tracker, no geolocation/marker
+  source picker, no zoom, no twilight shading, no combined/precip-style
+  derived layers. Click the map to set a point; a single-line meteogram of
+  that variable at that point (reuse the pixel-readback trick, one line, no
+  fills/gap-hiding — those were tuned for cloud/rain specifically).
+- A draft fetch/render script exists (`explore/fetch_render.py`, untested
+  beyond a tiny `--limit` smoke test) — reuses `mepscloud.fetch.latest_run_url`
+  /`run_meta`, writes its own `explore/web/cache/` (gitignored, separate from
+  the main app's cache), no chunked OPeNDAP reads (local run, not the memory-
+  constrained VPS updater, so simpler whole-variable reads are fine). The
+  viewer (`explore/web/index.html`) is not yet built.
+
 ## (much later) Convective velocity scale w\* of the boundary layer
 
 Deardorff convective velocity scale — a measure of daytime convective
