@@ -30,6 +30,18 @@ function subsolarPoint(date) {
   return { lat: dec * RAD, lon };
 }
 
+// Sun elevation (degrees above horizon, negative = below) at a given point
+// and UTC Date -- the meteogram's day/twilight/night background bands use
+// this directly (no map rastering needed, unlike the contour bands above).
+// elevation = 90 - angular distance from the subsolar point (spherical law
+// of cosines): sin(elevation) = sin(lat)sin(latS) + cos(lat)cos(latS)cos(dLon).
+function sunElevationDeg(date, latDeg, lonDeg) {
+  const sub = subsolarPoint(date);
+  const lat = latDeg * DEG, latS = sub.lat * DEG, dLon = (lonDeg - sub.lon) * DEG;
+  const sinElev = Math.sin(lat) * Math.sin(latS) + Math.cos(lat) * Math.cos(latS) * Math.cos(dLon);
+  return Math.asin(Math.max(-1, Math.min(1, sinElev))) * RAD;
+}
+
 // Point at angular distance `radiusDeg` and `bearingRad` from (lat0,lon0),
 // all on the sphere -- standard destination-point-given-distance formula.
 function destPoint(lat0Deg, lon0Deg, radiusDeg, bearingRad) {

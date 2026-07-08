@@ -87,19 +87,20 @@
   .pl-frz  { background:linear-gradient(to right,#dc88d2,#9f78ac,#914e97,#87338a,#7e1a7e,#750071); }
   .pl-snow { background:linear-gradient(to right,#19d0db,#00a8c5,#0093ba,#0080b0,#0065a7,
              #0054a1,#001789,#010071); }
-  /* --- layout: one column on mobile/narrow in the order map -> controls ->
-     meteogram -> status/logs; two columns >=1040px with the meteogram spanning
-     the right and status back under the map on the left --- */
+  /* --- layout: one column on mobile/narrow in the order map -> time slider ->
+     controls -> meteogram -> status/logs; two columns >=1040px with the
+     meteogram spanning the right and status back under the map on the left --- */
   .layout { display:grid; gap:10px 14px; align-items:start;
             grid-template-columns:minmax(0,1fr);
-            grid-template-areas:"map" "ctrl" "meteo" "status"; }
+            grid-template-areas:"map" "time" "ctrl" "meteo" "status"; }
   .layout > .map { grid-area:map; }
+  .layout > .timearea { grid-area:time; }
   .layout > .ctrl { grid-area:ctrl; }
   .layout > .meteo { grid-area:meteo; }
   .layout > .statusarea { grid-area:status; }
   @media (min-width:1040px) {
     .layout { grid-template-columns:minmax(0,640px) 380px;
-              grid-template-areas:"map meteo" "ctrl meteo" "status meteo"; }
+              grid-template-areas:"map meteo" "time meteo" "ctrl meteo" "status meteo"; }
   }
   .ctrl { display:flex; flex-direction:column; gap:8px; }
   .meteo { width:100%; max-width:96vw; }
@@ -128,6 +129,12 @@
   #stage.dragging { cursor:grabbing; }
   #stage.dragging #marker { cursor:grabbing; }
   .controls button.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+  /* "now" tick sitting behind the time slider -- mark is drawn first in DOM so
+     the slider's track/thumb paint over it, only showing through the gaps */
+  .slider-wrap { position:relative; flex:1; display:flex; align-items:center; min-width:200px; }
+  .slider-wrap input[type=range] { flex:1; }
+  .slider-now { position:absolute; top:2px; bottom:2px; width:2px; background:#3fb950;
+                opacity:0.9; pointer-events:none; }
 </style>
 </head>
 <body>
@@ -149,6 +156,15 @@
         </div>
       </div>
     </section>
+    <div class="timearea">
+      <div class="controls">
+        <div class="slider-wrap" id="sliderWrap">
+          <div id="sliderNow" class="slider-now" title="now" hidden></div>
+          <input id="slider" type="range" min="0" max="0" value="0">
+        </div>
+        <span class="timelabel" id="time">—</span>
+      </div>
+    </div>
     <div class="ctrl">
       <div class="controls">
         <div id="layerButtons" class="seg"></div>
@@ -169,13 +185,6 @@
         <div class="pl-row"><span class="pl-lbl">Rain</span><span class="pl-bar pl-rain"></span><span>0–25 mm/h</span></div>
         <div class="pl-row"><span class="pl-lbl">Frz</span><span class="pl-bar pl-frz"></span><span>0–5 mm/h</span></div>
         <div class="pl-row"><span class="pl-lbl">Snow</span><span class="pl-bar pl-snow"></span><span>0–15 cm/h</span></div>
-      </div>
-      <div class="controls">
-        <button id="play" title="Play/pause">▶</button>
-        <button id="prev" title="Previous (←)">⟨</button>
-        <button id="next" title="Next (→)">⟩</button>
-        <input id="slider" type="range" min="0" max="0" value="0">
-        <span class="timelabel" id="time">—</span>
       </div>
     </div>
     <section class="meteo" id="meteo">
@@ -209,7 +218,7 @@
 <!-- ?v= cache-buster: index.html is served fresh (Cloudflare DYNAMIC) but
      static/*.js is edge-cached ~4h, so bump this whenever twilight.js changes
      to force clients onto the new file instead of a stale cached one. -->
-<script src="static/twilight.js?v=2"></script>
+<script src="static/twilight.js?v=3"></script>
 <script>
 const $ = id => document.getElementById(id);
 const base = $('base'), overlay = $('overlay'), slider = $('slider'), timeEl = $('time');
@@ -217,7 +226,7 @@ const precip = $('precip');  // precipitation overlay, above clouds / below twil
 const layerButtons = $('layerButtons');
 const twilightShadeSvg = $('twilight-shade');  // above clouds, below overlay
 const twilightLinesSvg = $('twilight-lines');  // above shade, below overlay
-let manifest = null, idx = 0, playing = false, timer = null, currentLayer = null;
+let manifest = null, idx = 0, currentLayer = null;
 
 // Locked underlay colours (from the earlier slider tuning: sea 7/11, land
 // 10/16). Sliders removed; sea fills the whole frame behind the land mask.
@@ -383,6 +392,21 @@ const METEO_SERIES = [
 ];
 const KOMAKALLIO = [60.2415, 24.3349];   // default point / geoloc fallback
 const ZOOM_K = 3;
+
+// Chart background: a vertical wash per time step showing day/twilight/night
+// at the marker (elevation via sunElevationDeg, twilight.js) -- independent
+// of the animation frame, only of the marker's position and the run's valid
+// times. White at day, progressively darker through the 3 twilights, and NO
+// shading (alpha 0) once fully dark, matching the map's twilight styling
+// (white cloud / dark basemap already reads "night" without an overlay).
+const METEO_TWI_ALPHA = { day: 0.26, civil: 0.18, nautical: 0.10, astro: 0.04 };  // night = 0
+function meteoTwilightAlpha(elevDeg) {
+  if (elevDeg >= 0) return METEO_TWI_ALPHA.day;
+  if (elevDeg >= -6) return METEO_TWI_ALPHA.civil;
+  if (elevDeg >= -12) return METEO_TWI_ALPHA.nautical;
+  if (elevDeg >= -18) return METEO_TWI_ALPHA.astro;
+  return 0;
+}
 let markerPx = null, markerPy = null, zoomOn = false, lastSeries = null;
 
 function insideGrid(px, py) {
@@ -479,6 +503,20 @@ function localHM(iso) {
 function drawChart(series) {
   const n = manifest.valid_times_utc.length;
   let s = '';
+  if (markerPx != null) {   // sun-elevation background bands, drawn first = bottom of the stack
+    const [mlat, mlon] = pixelToLatLon(markerPx, markerPy, manifest.grid);
+    const xs = Array.from({ length: n }, (_, i) => chX(i, n));
+    const bounds = new Array(n + 1);
+    bounds[0] = CH.padL; bounds[n] = CH.W - CH.padR;
+    for (let i = 1; i < n; i++) bounds[i] = (xs[i - 1] + xs[i]) / 2;
+    for (let i = 0; i < n; i++) {
+      const elev = sunElevationDeg(new Date(manifest.valid_times_utc[i] + 'Z'), mlat, mlon);
+      const a = meteoTwilightAlpha(elev);
+      if (a <= 0) continue;   // night: no shading, plain chart background shows through
+      s += `<rect x="${bounds[i].toFixed(1)}" y="${CH.padT}" width="${(bounds[i + 1] - bounds[i]).toFixed(1)}" `
+         + `height="${CH.H - CH.padB - CH.padT}" fill="#ffffff" fill-opacity="${a}"/>`;
+    }
+  }
   for (let p = 0; p <= 100; p += 25) {   // y grid + % labels
     const y = chY(p / 100);
     s += `<line x1="${CH.padL}" y1="${y.toFixed(1)}" x2="${CH.W - CH.padR}" y2="${y.toFixed(1)}" stroke="#1e2933" stroke-width="1"/>`;
@@ -506,9 +544,12 @@ function drawChart(series) {
     const pts = series[ser.key].map((f, i) => f == null ? null : `${chX(i, n).toFixed(1)},${chY(f).toFixed(1)}`).filter(Boolean).join(' ');
     s += `<polyline points="${pts}" fill="none" stroke="${ser.color}" stroke-width="1.6" stroke-linejoin="round"/>`;
   }
+  s += `<line id="chartNow" x1="0" y1="${CH.padT}" x2="0" y2="${CH.H - CH.padB}" stroke="#3fb950" stroke-width="1.2" stroke-dasharray="3,2" opacity="0.85"/>`;
+  s += `<text id="chartNowLabel" y="${CH.padT + 9}" fill="#3fb950" font-size="9">now</text>`;
   s += `<line id="chartCursor" x1="0" y1="${CH.padT}" x2="0" y2="${CH.H - CH.padB}" stroke="var(--accent)" stroke-width="1" opacity="0.9"/>`;
   chart.innerHTML = s;
   updateChartCursor(idx);
+  updateNowMarkers();
 }
 function updateChartCursor(i) {
   const cur = document.getElementById('chartCursor');
@@ -516,6 +557,50 @@ function updateChartCursor(i) {
   const x = chX(i, manifest.valid_times_utc.length).toFixed(1);
   cur.setAttribute('x1', x); cur.setAttribute('x2', x);
 }
+
+// "now" position within the run as a fractional frame index (e.g. 12.4 = 40%
+// of the way from frame 12 to 13), by linear-interpolating real time against
+// the run's valid times. Clamped to the run's domain at the edges (rather
+// than hidden) so the marker stays put near a stale/about-to-handover run.
+function nowIndexFraction() {
+  if (!manifest) return null;
+  const times = manifest.valid_times_utc;
+  const n = times.length;
+  if (n === 0) return null;
+  const now = Date.now();
+  const t0 = Date.parse(times[0] + 'Z'), tN = Date.parse(times[n - 1] + 'Z');
+  if (now <= t0) return 0;
+  if (now >= tN) return n - 1;
+  for (let i = 0; i < n - 1; i++) {
+    const ta = Date.parse(times[i] + 'Z'), tb = Date.parse(times[i + 1] + 'Z');
+    if (now >= ta && now <= tb) return i + (now - ta) / (tb - ta);
+  }
+  return n - 1;
+}
+// Refreshes both "now" markers (chart line + slider tick) from the current
+// wall clock; called after every chart draw, on manifest load, and on a
+// periodic timer so they keep advancing even if the user never touches
+// anything (unlike updateChartCursor, which only moves on user action).
+function updateNowMarkers() {
+  const frac = nowIndexFraction();
+  if (frac == null) return;
+  const n = manifest.valid_times_utc.length;
+  const cur = document.getElementById('chartNow');
+  if (cur) {
+    const x = chX(frac, n);
+    cur.setAttribute('x1', x.toFixed(1)); cur.setAttribute('x2', x.toFixed(1));
+    const lbl = document.getElementById('chartNowLabel');
+    if (lbl) {
+      const nearRightEdge = x > CH.W - CH.padR - 22;
+      lbl.setAttribute('x', x.toFixed(1));
+      lbl.setAttribute('text-anchor', nearRightEdge ? 'end' : 'start');
+      lbl.setAttribute('dx', nearRightEdge ? '-3' : '3');
+    }
+  }
+  const mk = $('sliderNow');
+  if (mk) { mk.hidden = false; mk.style.left = (n <= 1 ? 0 : frac / (n - 1) * 100).toFixed(2) + '%'; }
+}
+setInterval(updateNowMarkers, 30000);   // keep advancing even without user interaction
 function buildMeteoLegend() {
   $('meteoLegend').innerHTML = METEO_SERIES.map(s => `<span><i style="background:${s.color}"></i>${s.label}</span>`).join('');
 }
@@ -613,17 +698,8 @@ function show(i) {
   updateChartCursor(idx);
 }
 function step(d) { show(idx + d); }
-function togglePlay() {
-  playing = !playing;
-  $('play').textContent = playing ? '⏸' : '▶';
-  if (playing) timer = setInterval(() => step(1), 400);
-  else clearInterval(timer);
-}
 
-slider.addEventListener('input', e => { if (playing) togglePlay(); show(+e.target.value); });
-$('play').onclick = togglePlay;
-$('prev').onclick = () => { if (playing) togglePlay(); step(-1); };
-$('next').onclick = () => { if (playing) togglePlay(); step(1); };
+slider.addEventListener('input', e => show(+e.target.value));
 $('preload').onclick = preloadAllFrames;
 $('showPrecip').onchange = e => {
   const on = e.target.checked;
@@ -640,9 +716,9 @@ $('showTwilightLines').onchange = e => {
   const d = e.target.checked ? 'inline' : 'none';
   TWILIGHT_BANDS.forEach(b => $('twi-line-' + b.depression).style.display = d);
 };
-document.addEventListener('keydown', e => {
-  if (e.key === 'ArrowLeft') { if (playing) togglePlay(); step(-1); }
-  if (e.key === 'ArrowRight') { if (playing) togglePlay(); step(1); }
+document.addEventListener('keydown', e => {   // arrow keys still scrub the slider even without the buttons
+  if (e.key === 'ArrowLeft') step(-1);
+  if (e.key === 'ArrowRight') step(1);
 });
 
 // When the Custom layer is active, tint the L/M/H/Fog buttons with the
@@ -773,6 +849,7 @@ function applyManifest(man) {
   const firstLoad = !manifest;
   manifest = man;
   slider.max = man.valid_times_utc.length - 1;
+  updateNowMarkers();   // slider "now" tick doesn't need the chart, just valid_times
   initTwilightSvg(man.grid);
   if (firstLoad || layerButtons.children.length === 0) buildLayerButtons(man.layers);
   // precip overlay availability: hide the toggle (and force it off) if this
