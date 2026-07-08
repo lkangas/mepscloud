@@ -1114,13 +1114,21 @@ function fmtClock(iso) {
   const off = Math.round((Date.UTC(+pd.year, +pd.month - 1, +pd.day, +pd.hour, +pd.minute) - d.getTime()) / 3600000);
   return `${p.hour}:${p.minute}:${p.second} ${off === 3 ? 'EEST' : 'EET'}`;
 }
-// Compact "how long ago" relative to now (recomputed each 2s poll, so it ticks).
+// Compact "how long ago" relative to now (recomputed each 2s poll, so it
+// ticks). Under a minute: seconds. Under an hour: minutes. Otherwise hours
+// AND minutes (h alone is too coarse), rolling into days past 48 h.
 function fmtAgo(iso) {
-  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
-  if (s < 60) return `${Math.round(s)} s ago`;
-  const m = s / 60; if (m < 60) return `${Math.round(m)} min ago`;
-  const h = m / 60; if (h < 48) return `${Math.round(h)} h ago`;
-  return `${Math.round(h / 24)} d ago`;
+  const s = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+  if (s < 60) return `${s} s ago`;
+  const totalMin = Math.round(s / 60);
+  if (totalMin < 60) return `${totalMin} min ago`;
+  if (totalMin < 48 * 60) {
+    const h = Math.floor(totalMin / 60), m = totalMin % 60;
+    return m ? `${h} h ${m} min ago` : `${h} h ago`;
+  }
+  const totalH = Math.round(totalMin / 60);
+  const d = Math.floor(totalH / 24), rh = totalH % 24;
+  return rh ? `${d} d ${rh} h ago` : `${d} d ago`;
 }
 function renderStatus(data) {
   const el = $('status');
