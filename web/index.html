@@ -555,7 +555,7 @@ marker.addEventListener('pointerdown', e => {
 });
 // move the pin live during a drag, but DON'T resample (sampling reads 4x67
 // frames -- far too heavy to run on every pointermove); resample on release.
-marker.addEventListener('pointermove', e => { if (dragging) placeMarkerPixel(...stageEventToPixel(e), false); });
+marker.addEventListener('pointermove', e => { if (dragging) { placeMarkerPixel(...stageEventToPixel(e), false); markManualPoint(); } });
 function stopDrag(e) {   // pointerup OR pointercancel (multi-touch/palm/context-menu) -> never leave dragging stuck
   if (!dragging) return;
   dragging = false; stage.classList.remove('dragging');
@@ -569,6 +569,14 @@ marker.addEventListener('pointercancel', stopDrag);
 stage.addEventListener('click', e => {
   if (justDragged || !manifest) return;
   placeMarkerPixel(...stageEventToPixel(e));
+  markManualPoint();
+});
+
+// native <details> stays open until you re-click its summary; close it when
+// the next interaction lands anywhere outside the menu.
+const overlaysMenu = document.querySelector('details.menu');
+document.addEventListener('pointerdown', e => {
+  if (overlaysMenu.open && !overlaysMenu.contains(e.target)) overlaysMenu.open = false;
 });
 
 // sampling (coalesced: at most one pass in flight; re-runs if the marker moved)
@@ -1043,6 +1051,13 @@ const PT_SOURCES = ['komakallio', 'efry', 'geo', 'manual'];
 const METEO_NOTE = '';   // idle state; #meteoNote is still used for real status (e.g. geolocation declined)
 
 function savePtSource(v) { try { localStorage.setItem('wxPtSource', v); } catch (_) {} }
+// a genuine drag / click-to-place makes the point manual -- reflect that in the
+// picker so re-selecting a preset (incl. "my location") counts as a change and
+// re-fires. NOT called from applyPtSource's own placements (geo/presets).
+function markManualPoint() {
+  const sel = $('ptSource');
+  if (sel.value !== 'manual') { sel.value = 'manual'; savePtSource('manual'); }
+}
 function fallbackKomakallio(msg) {
   $('meteoNote').textContent = msg;
   $('ptSource').value = 'komakallio'; savePtSource('komakallio');
