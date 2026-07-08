@@ -24,7 +24,8 @@ services:
       - ..:/app
     # Bursty ~3-min render every ~3h; cap memory so a surprise can't starve
     # the sensor-platform stack sharing this box. Measured peak on petzval is
-    # ~1.35 GB (the whole-variable OPeNDAP fetch spikes there); 2g gives
-    # margin. TODO: chunk the fetch per timestep to drop peak below ~200 MB.
-    mem_limit: 2g
+    # ~742 MB (after chunking the fetch per timestep); 1g gives margin. The
+    # remaining floor is the 4 combined-input arrays (low/mid/high/fog, ~272
+    # MB) kept for the derived layer.
+    mem_limit: 1g
     command: ["python", "update.py"]
