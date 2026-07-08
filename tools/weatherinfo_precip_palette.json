@@ -1,0 +1,38 @@
+{
+  "_source": "Sampled from weatherinfo.fi's FMI-MEPS precip render (harmonie_precip_S-reg_18.png, init 2026-07-08 00Z). Same source model as this app. Colorbars lifted at x=1138 (rain + freezing-rain) and x=1160 (snowfall).",
+  "_note": "Each ramp is ordered LOW->HIGH intensity. Value ranges are from the colorbar tick labels on the image; assume ~linear in value unless re-checked. Reproduce their look by building a LUT from these stops (interpolate) and mapping data value -> ramp position.",
+  "rain": {
+    "quantity": "precip rate",
+    "unit": "mm/h",
+    "value_low": 1.0,
+    "value_high": 25.0,
+    "stops_low_to_high": [
+      "#0189cc", "#005bb8", "#00868e", "#21b876", "#69dc67", "#d8f31c",
+      "#faf505", "#faf20c", "#fdbd11", "#fe9d16", "#fe8d1a", "#fe7320",
+      "#fe6324", "#ff5328", "#de371b", "#c1220f", "#de0d00", "#fe1216",
+      "#fc1b4b", "#fb257f", "#f933d2", "#f840ff", "#f969ff", "#fba8ff",
+      "#fdd0ff", "#fef9ff"
+    ]
+  },
+  "freezing_rain": {
+    "quantity": "precip rate (liquid, T<0)",
+    "unit": "mm/h",
+    "value_low": 1.0,
+    "value_high": 5.0,
+    "stops_low_to_high": [
+      "#dc88d2", "#bb89c1", "#9f78ac", "#9967a3", "#955b9e", "#914e97",
+      "#8c4291", "#87338a", "#832683", "#7e1a7e", "#790b76", "#750071"
+    ]
+  },
+  "snowfall": {
+    "quantity": "snow depth rate",
+    "unit": "cm/h",
+    "value_low": 1.0,
+    "value_high": 15.0,
+    "stops_low_to_high": [
+      "#19d0db", "#14c9d6", "#0dbdd0", "#05b2cb", "#00a8c5", "#009dbf",
+      "#0093ba", "#008bb6", "#0080b0", "#0075ac", "#0065a7", "#0054a1",
+      "#003196", "#001789", "#000c7f", "#010071"
+    ]
+  }
+}
