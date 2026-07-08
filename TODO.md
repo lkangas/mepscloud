@@ -25,6 +25,32 @@ a matching hi-res overlay/roads render. Backlog:
   extends directly — same trick, phase-filtered on the other two branches of
   the precip classification instead of is_rain).
 
+## Meteogram: better feedback while resampling (marker move is unresponsive)
+
+Moving the meteogram point (drag/click the marker, or the point-source
+dropdown) gives no feedback while the new point's data is being sampled —
+the old chart just sits there unchanged until the new one pops in, and nothing
+on the marker itself shows it's busy. Wanted:
+
+- The chart should darken and show "calculating…" on **every** resample, not
+  just the very first one. Currently `web/index.html`'s `doSample()` only
+  sets that text `if (!lastSeries)` (see around line 553) — i.e. gated to
+  the first-ever sample, since `lastSeries` is already truthy on every
+  subsequent move.
+- The marker (`#marker`) should get an animated "busy" indicator (e.g. a
+  pulsing ring) while `sampling` is true — no such state exists today.
+- The UI should not freeze during the calculation. `doSample()` is `async`,
+  but that only yields at the `await Promise.all(...)` (network-bound, one
+  per series); the actual per-pixel readback loop right after it
+  (`_mctx.clearRect`/`drawImage`/`getImageData`, around line 563-568) is
+  tight and synchronous — up to 6 series × 67 frames ≈ 400 canvas readbacks
+  per resample, with getImageData known to have real per-call overhead, and
+  no yield point in between. Likely needs chunking (yield via
+  `requestAnimationFrame`/`setTimeout(0)` every frame or every few) so the
+  browser can actually paint the "calculating…" state and stay responsive,
+  not just wrapping in `async` (which doesn't help a tight synchronous loop
+  between awaits).
+
 ## Product explorer: every MEPS variable, local-only one-off tool
 
 A completely separate, stripped-down tool to browse every product in
