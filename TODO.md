@@ -25,8 +25,13 @@ w* = [ (g / θ_v) · (H / (ρ·c_p)) · z_i ]^(1/3)
 ```
 
 - `g` — gravitational acceleration, 9.81 m/s².
-- `θ_v` — near-surface (virtual) potential temperature in K; surface/2 m
-  temperature is a fine first approximation.
+- `θ_v` — near-surface (virtual) potential temperature in K. NOT served
+  directly by MEPS (no θ or θ_v field in `meps_det_sfc`), but derivable at
+  2 m from fields that are present:
+  `θ = T2m·(1e5/p_sfc)^0.2854`, `θ_v = θ·(1 + 0.61·q2m)`, using
+  `air_temperature_2m`, `surface_air_pressure`, `specific_humidity_2m`.
+  As it's only the `g/θ_v` denominator (~290 K), `air_temperature_2m` alone
+  is a fine first approximation (within ~2 %).
 - `H / (ρ·c_p)` — the *kinematic* surface sensible heat flux (units K·m/s).
   H is the sensible heat flux in W/m² (`SFX_H`, see MEPS product list),
   ρ ≈ 1.2 kg/m³ air density, c_p ≈ 1005 J/(kg·K). w\* only defined for
