@@ -1114,6 +1114,14 @@ function fmtClock(iso) {
   const off = Math.round((Date.UTC(+pd.year, +pd.month - 1, +pd.day, +pd.hour, +pd.minute) - d.getTime()) / 3600000);
   return `${p.hour}:${p.minute}:${p.second} ${off === 3 ? 'EEST' : 'EET'}`;
 }
+// Compact "how long ago" relative to now (recomputed each 2s poll, so it ticks).
+function fmtAgo(iso) {
+  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 60) return `${Math.round(s)} s ago`;
+  const m = s / 60; if (m < 60) return `${Math.round(m)} min ago`;
+  const h = m / 60; if (h < 48) return `${Math.round(h)} h ago`;
+  return `${Math.round(h / 24)} d ago`;
+}
 function renderStatus(data) {
   const el = $('status');
   el.innerHTML = '';
@@ -1121,7 +1129,8 @@ function renderStatus(data) {
     const runEl = document.createElement('div'); runEl.className = 'status-run';
     const hdr = document.createElement('div'); hdr.className = 'status-hdr';
     const done = run.products.every(p => (run.states[p] || []).every(s => s === 2));
-    hdr.textContent = 'MEPS init ' + fmtInit(run.run_utc) + (done ? '  · ready' : '  · processing…');
+    hdr.textContent = 'MEPS init ' + fmtInit(run.run_utc) + '  · ' + fmtAgo(run.run_utc)
+                    + (done ? '  · ready' : '  · processing…');
     runEl.appendChild(hdr);
     const grid = document.createElement('div'); grid.className = 'status-grid';
     for (const prod of run.products) {
@@ -1144,7 +1153,7 @@ function renderStatus(data) {
     log.title = 'click for the full processing log';
     for (const ev of (run.events || [])) {
       const line = document.createElement('div');
-      line.textContent = fmtClock(ev.at) + ' · ' + ev.label;
+      line.textContent = fmtClock(ev.at) + ' · ' + ev.label + '  · ' + fmtAgo(ev.at);
       log.appendChild(line);
     }
     log.onclick = openLog;
