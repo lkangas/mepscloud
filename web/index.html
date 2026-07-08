@@ -135,6 +135,13 @@
             touch-action:none; }
   #marker::after { content:''; position:absolute; inset:5px; border-radius:50%;
                    background:#fff; box-shadow:0 0 0 1px #000; }
+  /* busy: an expanding, fading ring while the meteogram(s) are (re)sampling */
+  @keyframes markerBusyPulse {
+    0%   { box-shadow:0 0 0 1.5px #000, 0 0 4px #000, 0 0 0 0 rgba(90,180,255,.65); }
+    70%  { box-shadow:0 0 0 1.5px #000, 0 0 4px #000, 0 0 0 11px rgba(90,180,255,0); }
+    100% { box-shadow:0 0 0 1.5px #000, 0 0 4px #000, 0 0 0 0 rgba(90,180,255,0); }
+  }
+  #marker.busy { animation:markerBusyPulse 1s ease-out infinite; }
   #stage.dragging { cursor:grabbing; }
   #stage.dragging #marker { cursor:grabbing; }
   .controls button.active { background:var(--accent); color:#fff; border-color:var(--accent); }
@@ -561,35 +568,81 @@ stage.addEventListener('click', e => {
 // sampling (coalesced: at most one pass in flight; re-runs if the marker moved)
 const _mctx = (() => { const c = document.createElement('canvas'); c.width = c.height = 1; return c.getContext('2d', { willReadFrequently: true }); })();
 let sampling = false, pendingSample = false;
+
+// --- responsiveness helpers, shared by both meteogram sampling passes ------
+// nextPaint resolves AFTER the browser has painted a frame (double rAF), so a
+// just-set busy state is actually shown before heavy synchronous work begins.
+// CRUCIAL: rAF is PAUSED in a hidden/background tab, so it's raced against a
+// timeout -- otherwise a sample started (or the tab backgrounded) while hidden
+// would hang forever with "calculating…" stuck on screen. yieldToUI hands the
+// main thread back mid-loop so a long sample (many pixels x 67 frames) can't
+// freeze scrolling/input; setTimeout fires even when hidden (just throttled).
+function nextPaint() {
+  if (document.hidden) return Promise.resolve();   // nothing paints while hidden -> don't wait
+  return new Promise(r => {
+    let done = false; const fin = () => { if (!done) { done = true; r(); } };
+    requestAnimationFrame(() => requestAnimationFrame(fin));
+    setTimeout(fin, 100);
+  });
+}
+const yieldToUI = () => new Promise(r => setTimeout(r, 0));
+// Yield to the browser only if we've held the thread ~a frame AND the tab is
+// visible (a hidden tab has no jank to avoid, and its setTimeout is throttled
+// to ~1s, which would needlessly drag a sample out to seconds).
+function shouldYield(clock) { return !document.hidden && performance.now() - clock > 16; }
+// Pulse the map marker while EITHER chart is sampling.
+function updateBusyMarker() { marker.classList.toggle('busy', sampling || lpcSampling); }
+// Dim a chart + overlay "calculating…" on top of its current content (so the
+// old plot stays visible, greyed), removed automatically when the chart is
+// next redrawn (drawChart/drawLpcChart replace innerHTML).
+function setChartBusy(svgEl) {
+  if (svgEl.querySelector('.busy-ov')) return;
+  const NS = 'http://www.w3.org/2000/svg';
+  const g = document.createElementNS(NS, 'g'); g.setAttribute('class', 'busy-ov');
+  const rect = document.createElementNS(NS, 'rect');
+  rect.setAttribute('x', '0'); rect.setAttribute('y', '0');
+  rect.setAttribute('width', String(CH.W)); rect.setAttribute('height', String(CH.H));
+  rect.setAttribute('fill', '#0b0f14'); rect.setAttribute('opacity', '0.6');
+  const txt = document.createElementNS(NS, 'text');
+  txt.setAttribute('x', String(CH.W / 2)); txt.setAttribute('y', String(CH.H / 2 + 4));
+  txt.setAttribute('text-anchor', 'middle'); txt.setAttribute('fill', '#e6edf3'); txt.setAttribute('font-size', '13');
+  txt.textContent = 'calculating…';
+  g.appendChild(rect); g.appendChild(txt); svgEl.appendChild(g);
+}
+
 function scheduleSample() {
   if (markerPx == null || !manifest) return;
   if (sampling) { pendingSample = true; return; }
   doSample();
 }
 async function doSample() {
-  sampling = true; pendingSample = false;
-  if (!lastSeries) chart.innerHTML = '<text x="12" y="20" fill="#9aa7b4" font-size="11">sampling…</text>';
+  sampling = true; pendingSample = false; updateBusyMarker();
+  setChartBusy(chart);
+  await nextPaint();   // let the dim + marker pulse render before the heavy readback
   const run = manifest.run_utc;   // detect a run handover landing mid-sample (frame URLs are run-specific)
   const g = manifest.grid, n = manifest.valid_times_utc.length;
   const col = Math.max(0, Math.min(g.nx - 1, Math.round(markerPx)));
   const row = Math.max(0, Math.min(g.ny - 1, Math.round(markerPy)));
   const series = {};
   try {
+    let yclock = performance.now();   // time-based yield: only chunk if the work actually runs long
     for (const s of METEO_SERIES) {   // load each layer's frames in parallel, then read the pixel
       const imgs = await Promise.all(Array.from({ length: n }, (_, i) => loadFrame(frameUrl(s.key, i)).catch(() => null)));
       const arr = series[s.key] = new Array(n).fill(null);
       for (let i = 0; i < n; i++) {
-        if (!imgs[i]) continue;
-        _mctx.clearRect(0, 0, 1, 1);
-        _mctx.drawImage(imgs[i], col, row, 1, 1, 0, 0, 1, 1);
-        arr[i] = _mctx.getImageData(0, 0, 1, 1).data[3] / 255;
+        if (imgs[i]) {
+          _mctx.clearRect(0, 0, 1, 1);
+          _mctx.drawImage(imgs[i], col, row, 1, 1, 0, 0, 1, 1);
+          arr[i] = _mctx.getImageData(0, 0, 1, 1).data[3] / 255;
+        }
+        if (shouldYield(yclock)) { await yieldToUI(); yclock = performance.now(); }   // hand the thread back if we've held it a frame's worth
       }
     }
-  } catch (_) { sampling = false; return; }
-  sampling = false;
+  } catch (_) { sampling = false; updateBusyMarker(); return; }
+  sampling = false; updateBusyMarker();
   if (manifest.run_utc !== run) { doSample(); return; }   // handover mid-sample: discard the mixed pass, redo cleanly
   lastSeries = series;
-  drawChart(series);
+  drawChart(series);   // replaces innerHTML -> removes the busy overlay
   if (pendingSample) doSample();   // marker moved while sampling -> resample at the latest spot
 }
 
@@ -805,15 +858,16 @@ function scheduleLpcSample() {
 }
 
 async function doLpcSample() {
-  lpcSampling = true; lpcPending = false;
+  lpcSampling = true; lpcPending = false; updateBusyMarker();
   const key = currentLayer;
   $('lpcLayerLabel').textContent = LAYER_LABEL[key] || key;
   if (key === 'combined') {
     chart2.innerHTML = '<text x="12" y="20" fill="#9aa7b4" font-size="11">Custom layer has no single value — pick a raw layer</text>';
-    lpcSampling = false;
+    lpcSampling = false; updateBusyMarker();
     return;
   }
-  chart2.innerHTML = '<text x="12" y="20" fill="#9aa7b4" font-size="11">sampling…</text>';
+  setChartBusy(chart2);
+  await nextPaint();   // let the dim + marker pulse render before the (radius-dependent, heavier) readback
   const run = manifest.run_utc;
   const g = manifest.grid, n = manifest.valid_times_utc.length;
   const col = Math.max(0, Math.min(g.nx - 1, Math.round(markerPx)));
@@ -822,7 +876,7 @@ async function doLpcSample() {
     const x = col + dx, y = row + dy;
     return x >= 0 && x < g.nx && y >= 0 && y < g.ny;
   });
-  if (offsets.length === 0) { lpcSampling = false; return; }
+  if (offsets.length === 0) { lpcSampling = false; updateBusyMarker(); return; }
 
   // Read the whole disc's bounding box in ONE getImageData call per frame
   // (not one per pixel): draw the frame image once into a small canvas sized
@@ -839,27 +893,32 @@ async function doLpcSample() {
   const bctx = bcanvas.getContext('2d', { willReadFrequently: true });
 
   const imgs = await Promise.all(Array.from({ length: n }, (_, i) => loadFrame(frameUrl(key, i)).catch(() => null)));
-  if (manifest.run_utc !== run || currentLayer !== key) { lpcSampling = false; doLpcSample(); return; }   // handover or layer switch mid-sample
+  if (manifest.run_utc !== run || currentLayer !== key) { lpcSampling = false; updateBusyMarker(); doLpcSample(); return; }   // handover or layer switch mid-sample
 
   const series = offsets.map(() => new Array(n).fill(null));
+  let yclock = performance.now();   // time-based yield (radius-dependent work): chunk only if it runs long
   for (let i = 0; i < n; i++) {
-    if (!imgs[i]) continue;
-    bctx.clearRect(0, 0, bw, bh);
-    bctx.drawImage(imgs[i], bx, by, bw, bh, 0, 0, bw, bh);
-    const data = bctx.getImageData(0, 0, bw, bh).data;
-    for (let oi = 0; oi < offsets.length; oi++) {
-      const px = offsets[oi][0] - minDx, py = offsets[oi][1] - minDy;
-      series[oi][i] = data[(py * bw + px) * 4 + 3] / 255;
+    if (imgs[i]) {
+      bctx.clearRect(0, 0, bw, bh);
+      bctx.drawImage(imgs[i], bx, by, bw, bh, 0, 0, bw, bh);
+      const data = bctx.getImageData(0, 0, bw, bh).data;
+      for (let oi = 0; oi < offsets.length; oi++) {
+        const px = offsets[oi][0] - minDx, py = offsets[oi][1] - minDy;
+        series[oi][i] = data[(py * bw + px) * 4 + 3] / 255;
+      }
     }
+    if (shouldYield(yclock)) { await yieldToUI(); yclock = performance.now(); }
   }
+  // a late layer switch/handover during the yields -> don't draw a stale chart
+  if (manifest.run_utc !== run || currentLayer !== key) { lpcSampling = false; updateBusyMarker(); doLpcSample(); return; }
   const mean = new Array(n).fill(null);
   for (let i = 0; i < n; i++) {
     let sum = 0, cnt = 0;
     for (const s of series) { if (s[i] != null) { sum += s[i]; cnt++; } }
     mean[i] = cnt > 0 ? sum / cnt : null;
   }
-  lpcSampling = false;
-  drawLpcChart(series, mean);
+  lpcSampling = false; updateBusyMarker();
+  drawLpcChart(series, mean);   // replaces innerHTML -> removes the busy overlay
   if (lpcPending) doLpcSample();
 }
 
