@@ -398,7 +398,6 @@ function preloadAllFrames() {
 // across all frames of each layer. No backend involved.
 const stage = $('stage'), marker = $('marker'), chart = $('chart');
 const METEO_SERIES = [
-  { key: 'cloud_area_fraction',             label: 'Total', color: '#cbd5e1' },
   { key: 'low_type_cloud_area_fraction',    label: 'Low',   color: '#ff9a2e' },
   { key: 'medium_type_cloud_area_fraction', label: 'Mid',   color: '#ffe14d' },
   { key: 'high_type_cloud_area_fraction',   label: 'High',  color: '#6cb6ff' },
@@ -642,7 +641,16 @@ function drawChart(series) {
             + `L${pts[0][0].toFixed(1)},${baseY.toFixed(1)}Z`;
     s += `<path d="${d}" fill="${ser.color}" fill-opacity="0.10" stroke="none"/>`;
   }
-  for (const ser of METEO_SERIES) {   // curves on top of the fills
+  // Curves on top of the fills. No-fill traces (rain: thick + bright, no
+  // area fill to lean on) draw FIRST/underneath here -- otherwise a series
+  // that's flat at 0% for a long stretch (rain is dry most of the time) would
+  // sit directly on the shared baseline and visually bury the filled series
+  // wherever THEY also touch 0%, making it impossible to see whether their
+  // own flat-zero thinning is working. Array.prototype.sort is stable
+  // (ES2019+), so this only moves fill:false entries earlier -- it doesn't
+  // reorder anything else (fills loop, legend, buttons all keep source order).
+  const drawOrder = [...METEO_SERIES].sort((a, b) => (a.fill === false ? 0 : 1) - (b.fill === false ? 0 : 1));
+  for (const ser of drawOrder) {
     const keep = thinFlatZeros(series[ser.key]);
     const pts = series[ser.key].map((f, i) => (f == null || !keep[i]) ? null : `${chX(i, n).toFixed(1)},${chY(f).toFixed(1)}`).filter(Boolean).join(' ');
     s += `<polyline points="${pts}" fill="none" stroke="${ser.color}" stroke-width="${ser.width || 1}" stroke-linejoin="round"/>`;
