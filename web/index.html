@@ -135,13 +135,19 @@
             touch-action:none; }
   #marker::after { content:''; position:absolute; inset:5px; border-radius:50%;
                    background:#fff; box-shadow:0 0 0 1px #000; }
-  /* busy: an expanding, fading ring while the meteogram(s) are (re)sampling */
-  @keyframes markerBusyPulse {
-    0%   { box-shadow:0 0 0 1.5px #000, 0 0 4px #000, 0 0 0 0 rgba(90,180,255,.65); }
-    70%  { box-shadow:0 0 0 1.5px #000, 0 0 4px #000, 0 0 0 11px rgba(90,180,255,0); }
-    100% { box-shadow:0 0 0 1.5px #000, 0 0 4px #000, 0 0 0 0 rgba(90,180,255,0); }
+  /* busy: a rolling open-"C" spinner ring around the marker while the
+     meteogram(s) are (re)sampling -- a familiar loading affordance. Three
+     coloured borders + one transparent = a 3/4 arc with a gap (the C); the
+     dark drop-shadow keeps it visible over land, sea, and white cloud. */
+  #marker::before { content:''; position:absolute; inset:-8px; border-radius:50%;
+                    border:3.5px solid transparent; opacity:0; }
+  #marker.busy::before {
+    opacity:1;
+    border-color:#5ab4ff #5ab4ff #5ab4ff transparent;
+    filter:drop-shadow(0 0 2px rgba(0,0,0,.9));
+    animation:markerSpin .7s linear infinite;
   }
-  #marker.busy { animation:markerBusyPulse 1s ease-out infinite; }
+  @keyframes markerSpin { to { transform:rotate(360deg); } }
   #stage.dragging { cursor:grabbing; }
   #stage.dragging #marker { cursor:grabbing; }
   .controls button.active { background:var(--accent); color:#fff; border-color:var(--accent); }
