@@ -87,9 +87,10 @@
   .pl-frz  { background:linear-gradient(to right,#dc88d2,#9f78ac,#914e97,#87338a,#7e1a7e,#750071); }
   .pl-snow { background:linear-gradient(to right,#19d0db,#00a8c5,#0093ba,#0080b0,#0065a7,
              #0054a1,#001789,#010071); }
-  /* --- layout: one column on mobile/narrow in the order map -> time slider ->
-     controls -> meteogram -> status/logs; two columns >=1040px with the
-     meteogram spanning the right and status back under the map on the left --- */
+  /* --- layout: always a single column, in the order map -> time slider ->
+     controls -> meteogram -> status/logs. The meteogram matches the map's
+     width exactly (same max-width), so a separate side column doesn't fit at
+     any reasonable viewport -- kept stacked at every width. --- */
   .layout { display:grid; gap:10px 14px; align-items:start;
             grid-template-columns:minmax(0,1fr);
             grid-template-areas:"map" "time" "ctrl" "meteo" "status"; }
@@ -98,12 +99,8 @@
   .layout > .ctrl { grid-area:ctrl; }
   .layout > .meteo { grid-area:meteo; }
   .layout > .statusarea { grid-area:status; }
-  @media (min-width:1040px) {
-    .layout { grid-template-columns:minmax(0,640px) 380px;
-              grid-template-areas:"map meteo" "time meteo" "ctrl meteo" "status meteo"; }
-  }
   .ctrl { display:flex; flex-direction:column; gap:8px; }
-  .meteo { width:100%; max-width:96vw; }
+  .meteo { width:100%; max-width:640px; }   /* same cap as .map, below */
   .meteo-hdr { display:flex; align-items:center; gap:8px; flex-wrap:wrap;
                font-size:12px; color:var(--muted); margin-bottom:6px; }
   .meteo-hdr .pt { color:var(--fg); font-variant-numeric:tabular-nums; }
@@ -198,7 +195,7 @@
           <option value="manual">Manual (drag)</option>
         </select>
       </div>
-      <svg id="chart" viewBox="0 0 380 220" preserveAspectRatio="xMidYMid meet"></svg>
+      <svg id="chart" viewBox="0 0 640 220" preserveAspectRatio="xMidYMid meet"></svg>
       <div class="meteo-legend" id="meteoLegend"></div>
       <div class="meteo-note" id="meteoNote">Cloud cover (%) at the marker vs forecast time. Drag the marker or click the map to move it.</div>
     </section>
@@ -408,6 +405,31 @@ function meteoTwilightAlpha(elevDeg) {
   if (elevDeg >= -18) return METEO_TWI_ALPHA.astro;
   return 0;
 }
+// Sun elevation only changes at the true continuous rate of the sky, not at
+// the forecast's hourly cadence -- bucketing straight from the hourly samples
+// snapped every transition (sunrise, dusk, ...) to the nearest forecast hour,
+// visibly "staircasing" edges that are really smooth/precise. Instead, sample
+// elevation densely (every 2 min -- sub-pixel at this chart's width, cheap:
+// pure trig, a few thousand calls at most) and run-length-encode consecutive
+// same-tier samples into a handful of rects, each with an exact (to within
+// the sample step) real-world edge instead of the nearest hour mark.
+const TWI_SAMPLE_STEP_MS = 2 * 60000;
+function twilightRuns(mlat, mlon, n) {
+  const times = manifest.valid_times_utc;
+  const t0 = Date.parse(times[0] + 'Z'), tN = Date.parse(times[n - 1] + 'Z');
+  const timeToX = t => chX((t - t0) / (tN - t0) * (n - 1), n);   // continuous, not tied to a sample index
+  const runs = [];
+  let curAlpha = null, curStartT = t0;
+  for (let t = t0; t <= tN; t += TWI_SAMPLE_STEP_MS) {
+    const a = meteoTwilightAlpha(sunElevationDeg(new Date(t), mlat, mlon));
+    if (a !== curAlpha) {
+      if (curAlpha > 0) runs.push({ x0: timeToX(curStartT), x1: timeToX(t), alpha: curAlpha });
+      curAlpha = a; curStartT = t;
+    }
+  }
+  if (curAlpha > 0) runs.push({ x0: timeToX(curStartT), x1: timeToX(tN), alpha: curAlpha });
+  return runs;
+}
 let markerPx = null, markerPy = null, zoomOn = false, lastSeries = null;
 
 function insideGrid(px, py) {
@@ -493,7 +515,12 @@ async function doSample() {
   if (pendingSample) doSample();   // marker moved while sampling -> resample at the latest spot
 }
 
-const CH = { W: 380, H: 220, padL: 30, padR: 8, padT: 8, padB: 22 };
+// W now matches the map's max-width (640px, same CSS cap as .map) instead of
+// its own narrower box -- same height as before, so the plot is wider/flatter
+// (asked-for). padT raised from 8 -> 24: the 100% gridline sits lower, giving
+// the twilight background bands (which extend up to y=0, above padT) more
+// headroom to stay visible above a curve/fill pinned near 100% (overcast).
+const CH = { W: 640, H: 220, padL: 30, padR: 8, padT: 24, padB: 22 };
 function chX(i, n) { return CH.padL + (n <= 1 ? 0 : i / (n - 1)) * (CH.W - CH.padL - CH.padR); }
 function chY(f) { return (CH.H - CH.padB) - f * (CH.H - CH.padB - CH.padT); }
 function localHM(iso) {
@@ -506,20 +533,13 @@ function drawChart(series) {
   let s = '';
   if (markerPx != null) {   // sun-elevation background bands, drawn first = bottom of the stack
     const [mlat, mlon] = pixelToLatLon(markerPx, markerPy, manifest.grid);
-    const xs = Array.from({ length: n }, (_, i) => chX(i, n));
-    const bounds = new Array(n + 1);
-    bounds[0] = CH.padL; bounds[n] = CH.W - CH.padR;
-    for (let i = 1; i < n; i++) bounds[i] = (xs[i - 1] + xs[i]) / 2;
-    for (let i = 0; i < n; i++) {
-      const elev = sunElevationDeg(new Date(manifest.valid_times_utc[i] + 'Z'), mlat, mlon);
-      const a = meteoTwilightAlpha(elev);
-      if (a <= 0) continue;   // night: no shading, plain chart background shows through
+    for (const run of twilightRuns(mlat, mlon, n)) {
       // Extend above the 100% line (y=0, not padT): curves/area-fills never
       // draw above padT, so this keeps a sliver of shading always visible even
       // when a curve/fill is pinned near 100% (overcast) and would otherwise
       // sit flush with -- and visually crowd out -- the top of the band.
-      s += `<rect x="${bounds[i].toFixed(1)}" y="0" width="${(bounds[i + 1] - bounds[i]).toFixed(1)}" `
-         + `height="${CH.H - CH.padB}" fill="#ffffff" fill-opacity="${a}"/>`;
+      s += `<rect x="${run.x0.toFixed(1)}" y="0" width="${(run.x1 - run.x0).toFixed(1)}" `
+         + `height="${CH.H - CH.padB}" fill="#ffffff" fill-opacity="${run.alpha}"/>`;
     }
   }
   for (let p = 0; p <= 100; p += 25) {   // y grid + % labels
