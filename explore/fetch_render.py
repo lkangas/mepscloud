@@ -190,37 +190,45 @@ def main():
               + f", {len(excluded)} excluded (multi-level etc.)")
 
         # Resume: reuse already-complete variables from a prior partial run of
-        # THIS run (frames present + metadata in the existing manifest).
-        done = {}
+        # THIS run (frames present + metadata in the existing manifest), and
+        # remember which ones were all-no-data so they aren't re-fetched.
+        done, done_empty = {}, set()
         mpath = CACHE_DIR / "manifest.json"
         if mpath.exists():
             try:
                 prev = json.loads(mpath.read_text(encoding="utf-8"))
                 if prev.get("run_utc") == run_time.isoformat():
                     done = {p["key"]: p for p in prev.get("products", [])}
+                    done_empty = {e["key"] for e in prev.get("empty", [])}
             except (OSError, json.JSONDecodeError):
                 pass
 
         grid = {"nx": nx, "ny": ny, "x_min": float(x.min()), "x_max": float(x.max()),
                 "y_min": float(y.min()), "y_max": float(y.max())}
 
-        def manifest_doc(products, failed):
+        def manifest_doc(products, empty, failed):
             return {
                 "run_utc": run_time.isoformat(),
                 "valid_times_utc": [t.isoformat() for t in valid_times],
                 "grid": grid,
                 "frame_url_template": f"frames/{run_time:%Y%m%dT%H%MZ}/{{layer}}/{{step:03d}}.png",
                 "products": products,
+                "empty": empty,       # renderable but all-no-data this run (e.g. sea-ice temp in summer)
                 "excluded": excluded,
                 "failed": failed,
             }
 
-        products, failed = [], []
+        products, empty, failed = [], [], []
         for i, name in enumerate(renderable, 1):
             var = ds.variables[name]
             if name in done and frames_complete(out_dir / name, nt):
                 products.append(done[name])
                 print(f"[explore] ({i}/{len(renderable)}) {name}: already rendered, skipping")
+                continue
+            if name in done_empty:
+                empty.append({"key": name, "label": str(getattr(var, "long_name", name)),
+                              "group": "sfx" if name.startswith("SFX_") else "main"})
+                print(f"[explore] ({i}/{len(renderable)}) {name}: all no-data (cached), skipping")
                 continue
             t0 = time.time()
             print(f"[explore] ({i}/{len(renderable)}) {name} ...", end=" ", flush=True)
@@ -228,6 +236,12 @@ def main():
                 raw = read_var_chunked(var, nt, ny, nx)
                 alpha, vmin, vmax = quantize_auto(raw)
                 del raw
+                if vmin is None:   # no finite data anywhere this run -> list separately, don't render blank frames
+                    empty.append({"key": name, "label": str(getattr(var, "long_name", name)),
+                                  "group": "sfx" if name.startswith("SFX_") else "main"})
+                    write_manifest_atomic(manifest_doc(products, empty, failed))
+                    print("all no-data, listed as empty")
+                    continue
                 write_frames(name, alpha, out_dir)
                 del alpha
                 products.append({
@@ -238,25 +252,26 @@ def main():
                     "constant": (vmin == vmax),
                     "group": "sfx" if name.startswith("SFX_") else "main",
                 })
-                write_manifest_atomic(manifest_doc(products, failed))
+                write_manifest_atomic(manifest_doc(products, empty, failed))
                 elapsed = time.time() - t0
-                rng = f"[{vmin:.4g}, {vmax:.4g}]" if vmin is not None else "(all no-data)"
                 eta = (time.time() - t_start) / i * (len(renderable) - i) / 60
-                print(f"done ({elapsed:.1f}s) range={rng}  ~{eta:.0f} min left")
+                print(f"done ({elapsed:.1f}s) range=[{vmin:.4g}, {vmax:.4g}]  ~{eta:.0f} min left")
             except Exception as e:   # one bad variable must not abort the whole run
                 failed.append({"key": name, "error": repr(e)})
-                write_manifest_atomic(manifest_doc(products, failed))
+                write_manifest_atomic(manifest_doc(products, empty, failed))
                 print(f"FAILED: {e}")
                 traceback.print_exc()
     finally:
         ds.close()
 
-    write_manifest_atomic(manifest_doc(products, failed))
+    write_manifest_atomic(manifest_doc(products, empty, failed))
     if not args.limit and not failed:
         prune_old_runs(out_dir)
     mins = (time.time() - t_start) / 60
     print(f"[explore] DONE in {mins:.1f} min -- {len(products)} rendered, "
-          f"{len(failed)} failed, {len(excluded)} excluded")
+          f"{len(empty)} empty (all no-data), {len(failed)} failed, {len(excluded)} excluded")
+    if empty:
+        print("[explore] empty variables:", ", ".join(e["key"] for e in empty))
     if failed:
         print("[explore] failed variables:", ", ".join(f["key"] for f in failed))
 

@@ -152,6 +152,10 @@ function chX(i, n) { return CH.padL + (n <= 1 ? 0 : i / (n - 1)) * (CH.W - CH.pa
 function chY(v, lo, hi) { return hi > lo ? (CH.H - CH.padB) - (v - lo) / (hi - lo) * (CH.H - CH.padB - CH.padT)
                                         : (CH.H - CH.padB + CH.padT) / 2; }
 function drawChart(series, prod) {
+  if (prod.min == null) {   // defensive: an all-no-data product (shouldn't reach the picker, but don't throw)
+    chart.innerHTML = `<text x="12" y="20" fill="#9aa7b4" font-size="11">no data in this run</text>`;
+    return;
+  }
   const n = manifest.valid_times_utc.length;
   const vals = series.filter(v => v != null);
   const lo = prod.min, hi = prod.max;
