@@ -87,10 +87,12 @@
   .pl-frz  { background:linear-gradient(to right,#dc88d2,#9f78ac,#914e97,#87338a,#7e1a7e,#750071); }
   .pl-snow { background:linear-gradient(to right,#19d0db,#00a8c5,#0093ba,#0080b0,#0065a7,
              #0054a1,#001789,#010071); }
-  /* --- layout: always a single column, in the order map -> time slider ->
-     controls -> meteogram -> status/logs. The meteogram matches the map's
-     width exactly (same max-width), so a separate side column doesn't fit at
-     any reasonable viewport -- kept stacked at every width. --- */
+  /* --- layout: single column (map -> time slider -> controls -> meteogram ->
+     status/logs) when there isn't room for both 640px-wide boxes side by
+     side; once there is (>=1320px: two 640px columns + gap + page padding),
+     the meteogram moves beside the map, spanning all the left column's rows.
+     time/ctrl/status share the map's max-width so they don't stretch to the
+     full (unconstrained) grid track on a wide single-column browser. --- */
   .layout { display:grid; gap:10px 14px; align-items:start;
             grid-template-columns:minmax(0,1fr);
             grid-template-areas:"map" "time" "ctrl" "meteo" "status"; }
@@ -99,6 +101,11 @@
   .layout > .ctrl { grid-area:ctrl; }
   .layout > .meteo { grid-area:meteo; }
   .layout > .statusarea { grid-area:status; }
+  @media (min-width:1320px) {
+    .layout { grid-template-columns:minmax(0,640px) minmax(0,640px);
+              grid-template-areas:"map meteo" "time meteo" "ctrl meteo" "status meteo"; }
+  }
+  .timearea, .ctrl, .statusarea { width:100%; max-width:640px; }
   .ctrl { display:flex; flex-direction:column; gap:8px; }
   .meteo { width:100%; max-width:640px; }   /* same cap as .map, below */
   .meteo-hdr { display:flex; align-items:center; gap:8px; flex-wrap:wrap;
@@ -408,26 +415,54 @@ function meteoTwilightAlpha(elevDeg) {
 // Sun elevation only changes at the true continuous rate of the sky, not at
 // the forecast's hourly cadence -- bucketing straight from the hourly samples
 // snapped every transition (sunrise, dusk, ...) to the nearest forecast hour,
-// visibly "staircasing" edges that are really smooth/precise. Instead, sample
-// elevation densely (every 2 min -- sub-pixel at this chart's width, cheap:
-// pure trig, a few thousand calls at most) and run-length-encode consecutive
-// same-tier samples into a handful of rects, each with an exact (to within
-// the sample step) real-world edge instead of the nearest hour mark.
-const TWI_SAMPLE_STEP_MS = 2 * 60000;
+// visibly "staircasing" edges that are really smooth/precise. Rather than
+// approximate that by sampling densely and treating samples as boundaries
+// (still just a finer staircase), find the EXACT crossing times: a coarse
+// scan brackets each threshold crossing, then bisection refines it to well
+// under a chart pixel's worth of time. Elevation near Finland's latitudes
+// moves far slower than TWI_COARSE_STEP_MS per threshold-width even at the
+// steepest (equinox) sunrise/sunset, so a bracket can't hide a double
+// crossing; TWI_BISECT_TOL_MS is much finer than one chart pixel represents.
+const TWI_THRESHOLDS = [0, -6, -12, -18];
+const TWI_COARSE_STEP_MS = 10 * 60000;
+const TWI_BISECT_TOL_MS = 10000;
+
+function findTwilightCrossings(mlat, mlon, t0, tN) {
+  const elevAt = t => sunElevationDeg(new Date(t), mlat, mlon);
+  const crossings = [];
+  let tPrev = t0, ePrev = elevAt(t0);
+  for (let t = t0 + TWI_COARSE_STEP_MS; ; t += TWI_COARSE_STEP_MS) {
+    const tCur = Math.min(t, tN);
+    const eCur = elevAt(tCur);
+    for (const thr of TWI_THRESHOLDS) {
+      if ((ePrev - thr < 0) !== (eCur - thr < 0)) {
+        let lo = tPrev, hi = tCur, signLo = ePrev - thr < 0;
+        while (hi - lo > TWI_BISECT_TOL_MS) {   // bisect the bracket down to the tolerance
+          const mid = (lo + hi) / 2;
+          if ((elevAt(mid) - thr < 0) === signLo) lo = mid; else hi = mid;
+        }
+        crossings.push((lo + hi) / 2);
+      }
+    }
+    tPrev = tCur; ePrev = eCur;
+    if (tCur >= tN) break;
+  }
+  crossings.sort((a, b) => a - b);
+  return crossings;
+}
 function twilightRuns(mlat, mlon, n) {
   const times = manifest.valid_times_utc;
   const t0 = Date.parse(times[0] + 'Z'), tN = Date.parse(times[n - 1] + 'Z');
   const timeToX = t => chX((t - t0) / (tN - t0) * (n - 1), n);   // continuous, not tied to a sample index
+  const bounds = [t0, ...findTwilightCrossings(mlat, mlon, t0, tN), tN];
   const runs = [];
-  let curAlpha = null, curStartT = t0;
-  for (let t = t0; t <= tN; t += TWI_SAMPLE_STEP_MS) {
-    const a = meteoTwilightAlpha(sunElevationDeg(new Date(t), mlat, mlon));
-    if (a !== curAlpha) {
-      if (curAlpha > 0) runs.push({ x0: timeToX(curStartT), x1: timeToX(t), alpha: curAlpha });
-      curAlpha = a; curStartT = t;
-    }
+  for (let i = 0; i < bounds.length - 1; i++) {
+    const a = meteoTwilightAlpha(sunElevationDeg(new Date((bounds[i] + bounds[i + 1]) / 2), mlat, mlon));
+    if (a <= 0) continue;
+    const prev = runs[runs.length - 1];
+    if (prev && prev.alpha === a) prev.x1 = timeToX(bounds[i + 1]);   // merge (e.g. a near-duplicate crossing)
+    else runs.push({ x0: timeToX(bounds[i]), x1: timeToX(bounds[i + 1]), alpha: a });
   }
-  if (curAlpha > 0) runs.push({ x0: timeToX(curStartT), x1: timeToX(tN), alpha: curAlpha });
   return runs;
 }
 let markerPx = null, markerPy = null, zoomOn = false, lastSeries = null;
