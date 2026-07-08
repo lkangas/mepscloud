@@ -1,10 +1,7 @@
 # Updater for the MEPS cloud app. Fetches + renders the newest MEPS run on a
 # poll loop (update.py), writing frames/manifest.json/status.json/log.txt into
-# web/cache. The weather Caddy (in ~/weather, this repo's sibling wx repo)
-# serves web/ at weather.defocus.fi/clouds/ via a read-only bind mount.
-#
-# Deploy target: petzval, own directory ~/clouds/repo (this repo, cloned).
-# Isolated from ~/sensor-platform and ~/weather. Run from this deploy/ dir:
+# web/cache. A static web server (Caddy, nginx, ...) serves web/ separately,
+# reading web/cache via a read-only bind mount. Run from this deploy/ dir:
 #   docker compose up -d --build
 services:
   updater:
@@ -15,17 +12,17 @@ services:
     container_name: clouds-updater
     restart: unless-stopped
     working_dir: /app
-    # Run as the host user (lauri = uid 1000 on petzval) so web/cache is
-    # host-owned, not root -- lets git pull / manual cleanup work.
+    # Run as the host user (uid 1000) so web/cache is host-owned, not root --
+    # lets git pull / manual cleanup work. Adjust to match your host user.
     user: "1000:1000"
     # Bind-mount the whole repo so Caddy serves web/ (with the updater's
     # web/cache output) from the host, and code updates are a git pull away.
     volumes:
       - ..:/app
     # Bursty ~3-min render every ~3h; cap memory so a surprise can't starve
-    # the sensor-platform stack sharing this box. Measured peak on petzval is
-    # ~742 MB (after chunking the fetch per timestep); 1g gives margin. The
-    # remaining floor is the 4 combined-input arrays (low/mid/high/fog, ~272
-    # MB) kept for the derived layer.
+    # other services on a shared host. Measured peak is ~742 MB (after chunking
+    # the fetch per timestep); 1g gives margin. The remaining floor is the 4
+    # combined-input arrays (low/mid/high/fog, ~272 MB) kept for the derived
+    # layer.
     mem_limit: 1g
     command: ["python", "update.py"]

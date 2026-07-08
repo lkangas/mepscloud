@@ -41,21 +41,22 @@ python -m http.server 5174 --directory web       # -> http://localhost:5174/
 static map assets (`web/static/basemap`-derived `landmask.png`, coastline/
 border `overlay.png`, `roads.png`) — a one-off, not part of the runtime.
 
-## Deploy (petzval)
+## Deploy
 
-Static output served by the shared **weather Caddy** (in the sibling `wx`
-repo's `~/weather`) at `/clouds/`; an isolated updater container renders into
-`web/cache/`.
+Two parts that share the `web/` directory: the **updater** container (runs
+`update.py`, rendering the newest run into `web/cache/`) and any **static web
+server** that serves `web/`.
 
 ```bash
-# on petzval, own dir ~/clouds (outside ~/weather and ~/sensor-platform):
-git clone https://github.com/lkangas/mepscloud ~/clouds/repo
-cd ~/clouds/repo/deploy && docker compose up -d --build   # runs update.py
-
-# the weather Caddy (wx repo) bind-mounts ~/clouds/repo/web and serves /clouds/
+git clone https://github.com/lkangas/mepscloud
+cd mepscloud/deploy && docker compose up -d --build   # runs update.py -> web/cache/
 ```
 
-Updating the deployed app is `git pull` in `~/clouds/repo` + `docker compose
-restart` (code is bind-mounted, no rebuild unless deps change). See the `wx`
-repo's `deploy/Caddyfile` for the `/clouds` route and
-`../defocus.fi/docs/weather-tunnel.md` for the tunnel/Caddy side.
+Then serve the repo's `web/` directory with any static file server (Caddy,
+nginx, …), at a domain root or under a subpath — the page uses only
+page-relative URLs (`cache/…`, `static/…`), so both work. Set
+`MEPSCLOUD_CACHE_DIR` if the cache lives outside `web/`.
+
+The repo is bind-mounted into the container, so updating a deployment is a
+`git pull` + `docker compose restart` (rebuild only when `requirements.txt`
+changes).
