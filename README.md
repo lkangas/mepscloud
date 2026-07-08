@@ -5,9 +5,11 @@ Norway's MEPS deterministic model. Live at
 **[weather.defocus.fi/clouds](https://weather.defocus.fi/clouds/)**.
 
 A time-scrubbable map of Finland + surroundings showing cloud by altitude
-(low/mid/high + fog, colour-coded), a moving sun-elevation shade (civil /
-nautical / astronomical twilight), Finnish roads, and a live status grid of
-the fetch/render pipeline.
+(low/mid/high + fog, colour-coded), precipitation (rate + phase), a
+"Thermals" layer (boundary-layer convective velocity, relevant to daytime
+thermals and to seeing), a moving sun-elevation shade (civil / nautical /
+astronomical twilight), Finnish roads, and a live status grid of the
+fetch/render pipeline.
 
 ## How it works
 
@@ -19,6 +21,15 @@ the fetch/render pipeline.
   quantize, and render one PNG per layer per forecast step, plus a custom
   altitude-coloured `combined` layer. No projection at render time — the grid
   is already a fixed-pitch rectangle, so frames are native-pixel PNGs.
+- **"Thermals"** (`w*`, the Deardorff convective velocity scale) is derived
+  from sensible heat flux, boundary-layer thickness, and 2 m temperature.
+  Deliberately the simpler of two formulations that were built and compared:
+  a version using the real virtual potential temperature and air density
+  (needing two more MEPS fields, surface pressure + 2 m humidity) tracked
+  the simpler T2m-approximated version within <1% at typical Finnish
+  conditions, so the extra complexity was dropped rather than kept for a
+  sub-percent difference. See `mepscloud/config.py`'s w* section for the
+  full rationale and the dropped formula, if ever worth revisiting.
 - **Serving is static**: the pipeline writes `web/cache/` (frames +
   `manifest.json` + `status.json` + `log.txt`); the page (`web/index.html` +
   `web/static/`) is plain HTML/JS that reads them. No app server.

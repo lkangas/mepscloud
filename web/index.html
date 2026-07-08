@@ -343,17 +343,11 @@ const LAYER_LABEL = {
   medium_type_cloud_area_fraction: 'Mid cloud',
   high_type_cloud_area_fraction: 'High cloud',
   fog_area_fraction: 'Fog',
-  convective_cloud_area_fraction: 'Convective cloud',
-  cloud_binary_mask: 'Cloud binary mask',
-  cloud_base_altitude: 'Cloud base altitude',
-  cloud_top_altitude: 'Cloud top altitude',
   precip: 'Precipitation (rate + phase)',
   rain_rate: 'Rain rate (raw, mm/h)',
   precip_contour: 'Precipitation contour (wet-area outline)',
-  w_star_approx_map: 'Convective velocity w* (approx)',
-  w_star_exact_map: 'Convective velocity w* (exact)',
-  w_star_approx_raw: 'w* raw (approx, m/s)',
-  w_star_exact_raw: 'w* raw (exact, m/s)',
+  w_star_map: 'Thermals (convective velocity w*)',
+  w_star_raw: 'Thermals raw (w*, m/s)',
 };
 const LAYER_SHORT = {
   combined: 'Custom',
@@ -362,17 +356,11 @@ const LAYER_SHORT = {
   medium_type_cloud_area_fraction: 'M',
   high_type_cloud_area_fraction: 'H',
   fog_area_fraction: 'Fog',
-  convective_cloud_area_fraction: 'Conv',
-  cloud_binary_mask: 'Mask',
-  cloud_base_altitude: 'Base',
-  cloud_top_altitude: 'Top',
   precip: 'Precip',
   rain_rate: 'Rain',
   precip_contour: 'Outline',
-  w_star_approx_map: 'w*A',
-  w_star_exact_map: 'w*E',
-  w_star_approx_raw: 'w*A raw',
-  w_star_exact_raw: 'w*E raw',
+  w_star_map: 'Thermals',
+  w_star_raw: 'Thermals raw',
 };
 
 function frameUrl(layer, step) {
@@ -458,16 +446,15 @@ const METEO_SERIES = [
   // comparable (a bigger event reads visibly taller, not re-normalized down
   // to the same 60%).
   { key: 'rain_rate', label: 'Rain', color: '#ff3b3b', fill: false, width: 2.4, scale: 4.78125 },
-  // w* (Deardorff convective velocity scale, m/s) -- raw layers (render.py
-  // _wstar_raw_la, alpha = clip(w_star/WSTAR_MAX, 0, 1)), same pixel-readback
-  // trick as rain_rate. Two variants shown side by side for comparison: T2m-
-  // approximated theta_v/rho vs. the full theta_v + real air density. Both 0
-  // (collapsed to a gap by the zero-hiding below, same as rain_rate's dry
-  // stretches) whenever the boundary layer is stable (H<=0, i.e. most nights).
-  // Two shades of the same green so the pair reads as "one quantity, two
-  // variants" -- no other trace here uses green.
-  { key: 'w_star_approx_raw', label: 'w* approx', color: '#3ddc84' },
-  { key: 'w_star_exact_raw',  label: 'w* exact',  color: '#0e8a4b' },
+  // "Thermals" (w*, Deardorff convective velocity scale, m/s) -- a raw layer
+  // (render.py _wstar_raw_la, alpha = clip(w_star/WSTAR_MAX, 0, 1)), same
+  // pixel-readback trick as rain_rate. 0 (collapsed to a gap by the zero-
+  // hiding below, same as rain_rate's dry stretches) whenever the boundary
+  // layer is stable (H<=0, i.e. most nights). Originally shipped with a
+  // second, more exact variant (real theta_v + real air density instead of
+  // T2m + a constant) for comparison -- dropped after the two tracked
+  // within <1% of each other; see config.py's w* section.
+  { key: 'w_star_raw', label: 'Thermals', color: '#3ddc84' },
 ];
 const KOMAKALLIO = [60.2415, 24.3349];   // default point / geoloc fallback
 const ZOOM_K = 5;   // locked after live comparison at several factors

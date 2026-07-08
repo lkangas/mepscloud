@@ -30,10 +30,6 @@ from PIL import Image, ImageDraw
 
 from . import config, fetch
 
-# uint16 metres -> 0-255 display range. Real cloud tops observed up to
-# ~13.3km; pad a bit above that rather than clip real data.
-ALT_DISPLAY_MAX_M = 14000
-
 # ---------------------------------------------------------------------------
 # Turbo colormap (Google, Mikhailov 2019) -- pure-numpy, no matplotlib
 # (excluded from this pipeline, see module docstring). 33 stops (every 8th
@@ -108,11 +104,10 @@ COMBINED_INPUTS = (
 
 # Processing order = fetch order (raw MEPS vars), the derived combined, then
 # the precipitation overlay + its raw rain-rate layer (both derived from
-# precip rate + type, see below), then w* (approx + exact, each a map +
-# raw pair, derived from SFX_H/boundary-layer-thickness/T2m/pressure/humidity).
+# precip rate + type, see below), then w* ("Thermals" -- a map + raw pair,
+# derived from SFX_H/boundary-layer-thickness/T2m).
 STATUS_PRODUCTS = list(config.CLOUD_VARS) + ["combined", "precip", "rain_rate", "precip_contour",
-                                              "w_star_approx_map", "w_star_approx_raw",
-                                              "w_star_exact_map", "w_star_exact_raw"]
+                                              "w_star_map", "w_star_raw"]
 
 
 def _now() -> str:
@@ -267,14 +262,11 @@ class _Status:
             self.write()
 
 
-def _to_display_png(arr2d: np.ndarray, is_metres: bool) -> Image.Image:
-    """quantized array -> north-up LA (luminance+alpha) PNG: white at an
-    opacity equal to cloudiness, so clear (0) is fully transparent."""
-    if is_metres:
-        alpha = np.clip(arr2d.astype(np.float32) / ALT_DISPLAY_MAX_M * 255, 0, 255).astype(np.uint8)
-    else:
-        alpha = arr2d
-    north_up = np.flipud(alpha)  # y is stored ascending (south->north); images want row0=north
+def _to_display_png(arr2d: np.ndarray) -> Image.Image:
+    """quantized 0-255 fraction array -> north-up LA (luminance+alpha) PNG:
+    white at an opacity equal to cloudiness, so clear (0) is fully
+    transparent."""
+    north_up = np.flipud(arr2d)  # y is stored ascending (south->north); images want row0=north
     la = np.empty((*north_up.shape, 2), dtype=np.uint8)
     la[..., 0] = 255       # constant white
     la[..., 1] = north_up  # alpha = cloudiness
@@ -560,60 +552,38 @@ def _wstar_map_rgba(w_star: np.ndarray, h: np.ndarray) -> np.ndarray:
     return np.flipud(rgba)
 
 
-def _write_wstar_frames(ds, out_dir: Path, on_approx_map=None, on_approx_raw=None,
-                        on_exact_map=None, on_exact_raw=None) -> tuple[Path, Path, Path, Path]:
-    """Stream all four w* products straight from the open OPeNDAP dataset, in
-    one pass over fetch.iter_wstar_frames (a generator -- can't be iterated
-    twice)."""
-    am_dir = out_dir / "w_star_approx_map"
-    am_dir.mkdir(exist_ok=True)
-    ar_dir = out_dir / "w_star_approx_raw"
-    ar_dir.mkdir(exist_ok=True)
-    em_dir = out_dir / "w_star_exact_map"
-    em_dir.mkdir(exist_ok=True)
-    er_dir = out_dir / "w_star_exact_raw"
-    er_dir.mkdir(exist_ok=True)
-    for ti, w_approx, w_exact, h in fetch.iter_wstar_frames(ds):
-        Image.fromarray(_wstar_map_rgba(w_approx, h), mode="RGBA").save(am_dir / f"{ti:03d}.png")
-        if on_approx_map:
-            on_approx_map(ti)
-        Image.fromarray(_wstar_raw_la(w_approx), mode="LA").save(ar_dir / f"{ti:03d}.png")
-        if on_approx_raw:
-            on_approx_raw(ti)
-        Image.fromarray(_wstar_map_rgba(w_exact, h), mode="RGBA").save(em_dir / f"{ti:03d}.png")
-        if on_exact_map:
-            on_exact_map(ti)
-        Image.fromarray(_wstar_raw_la(w_exact), mode="LA").save(er_dir / f"{ti:03d}.png")
-        if on_exact_raw:
-            on_exact_raw(ti)
-    return am_dir, ar_dir, em_dir, er_dir
+def _write_wstar_frames(ds, out_dir: Path, on_map=None, on_raw=None) -> tuple[Path, Path]:
+    """Stream both w* ("Thermals") products straight from the open OPeNDAP
+    dataset, in one pass over fetch.iter_wstar_frames (a generator -- can't
+    be iterated twice)."""
+    map_dir = out_dir / "w_star_map"
+    map_dir.mkdir(exist_ok=True)
+    raw_dir = out_dir / "w_star_raw"
+    raw_dir.mkdir(exist_ok=True)
+    for ti, w_star, h in fetch.iter_wstar_frames(ds):
+        Image.fromarray(_wstar_map_rgba(w_star, h), mode="RGBA").save(map_dir / f"{ti:03d}.png")
+        if on_map:
+            on_map(ti)
+        Image.fromarray(_wstar_raw_la(w_star), mode="LA").save(raw_dir / f"{ti:03d}.png")
+        if on_raw:
+            on_raw(ti)
+    return map_dir, raw_dir
 
 
-def _write_wstar_frames_arrays(w_approx, w_exact, h, out_dir: Path, on_approx_map=None, on_approx_raw=None,
-                               on_exact_map=None, on_exact_raw=None) -> tuple[Path, Path, Path, Path]:
-    """Write all four w* products from full [t,ny,nx] arrays (local npz path)."""
-    am_dir = out_dir / "w_star_approx_map"
-    am_dir.mkdir(exist_ok=True)
-    ar_dir = out_dir / "w_star_approx_raw"
-    ar_dir.mkdir(exist_ok=True)
-    em_dir = out_dir / "w_star_exact_map"
-    em_dir.mkdir(exist_ok=True)
-    er_dir = out_dir / "w_star_exact_raw"
-    er_dir.mkdir(exist_ok=True)
-    for ti in range(w_approx.shape[0]):
-        Image.fromarray(_wstar_map_rgba(w_approx[ti], h[ti]), mode="RGBA").save(am_dir / f"{ti:03d}.png")
-        if on_approx_map:
-            on_approx_map(ti)
-        Image.fromarray(_wstar_raw_la(w_approx[ti]), mode="LA").save(ar_dir / f"{ti:03d}.png")
-        if on_approx_raw:
-            on_approx_raw(ti)
-        Image.fromarray(_wstar_map_rgba(w_exact[ti], h[ti]), mode="RGBA").save(em_dir / f"{ti:03d}.png")
-        if on_exact_map:
-            on_exact_map(ti)
-        Image.fromarray(_wstar_raw_la(w_exact[ti]), mode="LA").save(er_dir / f"{ti:03d}.png")
-        if on_exact_raw:
-            on_exact_raw(ti)
-    return am_dir, ar_dir, em_dir, er_dir
+def _write_wstar_frames_arrays(w_star, h, out_dir: Path, on_map=None, on_raw=None) -> tuple[Path, Path]:
+    """Write both w* products from full [t,ny,nx] arrays (local npz path)."""
+    map_dir = out_dir / "w_star_map"
+    map_dir.mkdir(exist_ok=True)
+    raw_dir = out_dir / "w_star_raw"
+    raw_dir.mkdir(exist_ok=True)
+    for ti in range(w_star.shape[0]):
+        Image.fromarray(_wstar_map_rgba(w_star[ti], h[ti]), mode="RGBA").save(map_dir / f"{ti:03d}.png")
+        if on_map:
+            on_map(ti)
+        Image.fromarray(_wstar_raw_la(w_star[ti]), mode="LA").save(raw_dir / f"{ti:03d}.png")
+        if on_raw:
+            on_raw(ti)
+    return map_dir, raw_dir
 
 
 def _frames_dir(run_time: dt.datetime) -> Path:
@@ -621,11 +591,10 @@ def _frames_dir(run_time: dt.datetime) -> Path:
 
 
 def _write_frames(name: str, quantized: np.ndarray, out_dir: Path, on_frame=None) -> Path:
-    is_metres = name in config.CLOUD_VARS_METRES
     var_dir = out_dir / name
     var_dir.mkdir(exist_ok=True)
     for ti in range(quantized.shape[0]):
-        img = _to_display_png(quantized[ti], is_metres)
+        img = _to_display_png(quantized[ti])
         # optimize=True roughly triples PNG encode time across 500+ frames
         # for a modest size win -- not worth it, especially while iterating.
         img.save(var_dir / f"{ti:03d}.png")
@@ -728,31 +697,23 @@ def render_latest_run(force: bool = False) -> dict:
         print(f"[render]   precip_contour: {len(valid_times)} frames -> {kdir}")
         layers.append("rain_rate")  # a normal switchable layer, like the cloud vars above
 
-        # w* (approx + exact): 3 more surface vars (SFX_H, boundary-layer
-        # thickness, surface pressure, specific humidity -- T2m already read
-        # above), streamed straight from the still-open dataset. Only the two
-        # "_map" products become layer buttons; the "_raw" pair is
-        # meteogram-only, same split as precip/precip_contour vs. rain_rate.
-        status.mark_fetched("w_star_approx_map")
-        status.mark_fetched("w_star_approx_raw")
-        status.mark_fetched("w_star_exact_map")
-        status.mark_fetched("w_star_exact_raw")
+        # w* ("Thermals"): 2 more surface vars (SFX_H, boundary-layer
+        # thickness -- T2m already read above), streamed straight from the
+        # still-open dataset. The map product becomes a layer button; the
+        # raw one is meteogram-only, same split as precip/precip_contour
+        # vs. rain_rate.
+        status.mark_fetched("w_star_map")
+        status.mark_fetched("w_star_raw")
         status.write()
-        wamdir, wardir, wemdir, werdir = _write_wstar_frames(
+        wmdir, wrdir = _write_wstar_frames(
             ds, out_dir,
-            on_approx_map=lambda ti: (status.mark_processed("w_star_approx_map", ti), status.write_throttled()),
-            on_approx_raw=lambda ti: (status.mark_processed("w_star_approx_raw", ti), status.write_throttled()),
-            on_exact_map=lambda ti: (status.mark_processed("w_star_exact_map", ti), status.write_throttled()),
-            on_exact_raw=lambda ti: (status.mark_processed("w_star_exact_raw", ti), status.write_throttled()))
+            on_map=lambda ti: (status.mark_processed("w_star_map", ti), status.write_throttled()),
+            on_raw=lambda ti: (status.mark_processed("w_star_raw", ti), status.write_throttled()))
         status.write()
-        status.log_processed("w_star_approx_map")
-        status.log_processed("w_star_approx_raw")
-        status.log_processed("w_star_exact_map")
-        status.log_processed("w_star_exact_raw")
-        print(f"[render]   w_star_approx: {len(valid_times)} frames -> {wamdir}, {wardir}")
-        print(f"[render]   w_star_exact: {len(valid_times)} frames -> {wemdir}, {werdir}")
-        layers.append("w_star_approx_map")
-        layers.append("w_star_exact_map")
+        status.log_processed("w_star_map")
+        status.log_processed("w_star_raw")
+        print(f"[render]   w_star: {len(valid_times)} frames -> {wmdir}, {wrdir}")
+        layers.append("w_star_map")
 
         status.mark_done()
         status.write()
@@ -824,28 +785,20 @@ def render_from_npz(npz_path: Path, force: bool = True) -> dict:
             print(f"[render]   precip_contour: {len(valid_times)} frames -> {kdir}")
             layers.append("rain_rate")
 
-        has_wstar = "w_star_approx" in z
+        has_wstar = "w_star" in z
         if has_wstar:
-            status.mark_fetched("w_star_approx_map")
-            status.mark_fetched("w_star_approx_raw")
-            status.mark_fetched("w_star_exact_map")
-            status.mark_fetched("w_star_exact_raw")
+            status.mark_fetched("w_star_map")
+            status.mark_fetched("w_star_raw")
             status.write()
-            wamdir, wardir, wemdir, werdir = _write_wstar_frames_arrays(
-                z["w_star_approx"], z["w_star_exact"], z["w_star_h"], out_dir,
-                on_approx_map=lambda ti: (status.mark_processed("w_star_approx_map", ti), status.write_throttled()),
-                on_approx_raw=lambda ti: (status.mark_processed("w_star_approx_raw", ti), status.write_throttled()),
-                on_exact_map=lambda ti: (status.mark_processed("w_star_exact_map", ti), status.write_throttled()),
-                on_exact_raw=lambda ti: (status.mark_processed("w_star_exact_raw", ti), status.write_throttled()))
+            wmdir, wrdir = _write_wstar_frames_arrays(
+                z["w_star"], z["w_star_h"], out_dir,
+                on_map=lambda ti: (status.mark_processed("w_star_map", ti), status.write_throttled()),
+                on_raw=lambda ti: (status.mark_processed("w_star_raw", ti), status.write_throttled()))
             status.write()
-            status.log_processed("w_star_approx_map")
-            status.log_processed("w_star_approx_raw")
-            status.log_processed("w_star_exact_map")
-            status.log_processed("w_star_exact_raw")
-            print(f"[render]   w_star_approx: {len(valid_times)} frames -> {wamdir}, {wardir}")
-            print(f"[render]   w_star_exact: {len(valid_times)} frames -> {wemdir}, {werdir}")
-            layers.append("w_star_approx_map")
-            layers.append("w_star_exact_map")
+            status.log_processed("w_star_map")
+            status.log_processed("w_star_raw")
+            print(f"[render]   w_star: {len(valid_times)} frames -> {wmdir}, {wrdir}")
+            layers.append("w_star_map")
 
         status.mark_done()
         status.write()

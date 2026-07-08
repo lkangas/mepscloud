@@ -38,11 +38,13 @@ MEPS_DET_SFC_PREFIX = "meps_det_sfc_"
 NATIVE_PROJ4 = "+proj=lcc +lat_1=63.3 +lat_2=63.3 +lat_0=63.3 +lon_0=15 +R=6371000 +units=m +no_defs"
 
 # ---------------------------------------------------------------------------
-# Cloud variables. "Fraction" vars are 0-1 (or %, normalised on fetch) and
-# stored quantized to uint8 (plenty of precision for visualization, ~1/4
-# the size of float32). "Metres" vars (cloud base/top altitude) are stored
-# as uint16 metres (cloud tops never approach 65535m, so no clipping risk
-# in practice; NaN -> 0 which reads as "no cloud base/top", i.e. clear).
+# Cloud variables. 0-1 fractions (or %, normalised on fetch), stored
+# quantized to uint8 (plenty of precision for visualization, ~1/4 the size
+# of float32). Trimmed down from the originally-fetched set -- also had
+# convective_cloud_area_fraction, cloud_binary_mask (fraction-shaped) and
+# cloud_base_altitude, cloud_top_altitude (metres, uint16, their own
+# quantizer) -- dropped as not useful enough to keep rendering/serving every
+# run; see the w* section below for a similar trim.
 # ---------------------------------------------------------------------------
 CLOUD_VARS_FRACTION = (
     "cloud_area_fraction",              # total (TCC)
@@ -50,14 +52,8 @@ CLOUD_VARS_FRACTION = (
     "medium_type_cloud_area_fraction",  # MCC
     "high_type_cloud_area_fraction",    # HCC
     "fog_area_fraction",                # surface fog (the "total but no band" cloud)
-    "convective_cloud_area_fraction",   # CCC -- units are % unlike the rest, normalised on fetch
-    "cloud_binary_mask",
 )
-CLOUD_VARS_METRES = (
-    "cloud_base_altitude",
-    "cloud_top_altitude",
-)
-CLOUD_VARS = CLOUD_VARS_FRACTION + CLOUD_VARS_METRES
+CLOUD_VARS = CLOUD_VARS_FRACTION
 
 # ---------------------------------------------------------------------------
 # Precipitation. Handled separately from the cloud vars (not a fraction, not a
@@ -83,35 +79,44 @@ PRECIP_VARS = (PRECIP_ACC_VAR, PRECIP_TYPE_VAR, PRECIP_TEMP_VAR)
 # point of this app, not just a "tonight" snapshot.
 
 # ---------------------------------------------------------------------------
-# w* (Deardorff convective velocity scale) -- boundary-layer "stirring
-# strength", relevant to daytime thermals/seeing. Read independently of the
-# precip vars above (a second, separate chunked pass, including its own
-# air_temperature_2m read) rather than threading PRECIP_TEMP_VAR's already-
-# fetched array through -- keeps the two unrelated derived-product code
-# paths decoupled at the cost of one extra ~270MB transient read per run.
+# w* ("Thermals" in the UI) -- Deardorff convective velocity scale,
+# boundary-layer "stirring strength", relevant to daytime thermals/seeing.
+# Read independently of the precip vars above (a second, separate chunked
+# pass, including its own air_temperature_2m read) rather than threading
+# PRECIP_TEMP_VAR's already-fetched array through -- keeps the two
+# unrelated derived-product code paths decoupled at the cost of one extra
+# ~270MB transient read per run.
 #
 # w* = [ (g/theta_v) * (H/(rho*cp)) * zi ]^(1/3) where H>0 (unstable), else 0.
-# Two variants, computed side by side: "approx" uses T2m directly as
-# theta_v and a constant air density; "exact" uses the real virtual
-# potential temperature (via surface_air_pressure + specific_humidity_2m)
-# and real density from the ideal gas law. The physics constants below are
-# used by fetch.iter_wstar_frames (which does the actual computation) --
-# they live here, not in render.py, because render.py imports fetch.py, so
-# fetch.py can't import render.py's constants back without a cycle.
-# render.py has its own WSTAR_MAX/WSTAR_ALPHA for *display* encoding only
-# (clip ceiling, map opacity) -- not physics, so no cycle there.
+#
+# DECISION: originally built with two variants -- this one (theta_v = T2m
+# directly, constant air density) plus an "exact" one (real virtual
+# potential temperature via surface_air_pressure + specific_humidity_2m,
+# real density from the ideal gas law). Deployed both, compared them
+# side-by-side on the meteogram, and dropped "exact": at a live sample
+# point (Jyvaskyla, 2026-07-09) the two tracked within <1% of each other
+# across a full day, including the daytime peak (~2.3 vs ~2.4 m/s) -- not
+# a large enough difference to justify fetching+rendering two more MEPS
+# fields and two more PNG layers every run. Only the simpler approximation
+# remains. If ever revisited: surface_air_pressure + specific_humidity_2m
+# are the two extra fields, theta = T2m*(1e5/p_sfc)^0.2854,
+# theta_v = theta*(1+0.61*q2m), rho = p_sfc/(R_d*T2m), R_d = 287.05 J/(kg*K).
+#
+# The physics constants below are used by fetch.iter_wstar_frames (which
+# does the actual computation) -- they live here, not in render.py, because
+# render.py imports fetch.py, so fetch.py can't import render.py's
+# constants back without a cycle. render.py has its own WSTAR_MAX/
+# WSTAR_ALPHA for *display* encoding only (clip ceiling, map opacity) --
+# not physics, so no cycle there.
 # ---------------------------------------------------------------------------
 WSTAR_H_VAR = "SFX_H"                                  # W/m^2, (time, y, x) -- NOTE: no vertical dim, unlike every other var here
 WSTAR_ZI_VAR = "atmosphere_boundary_layer_thickness"   # m
 WSTAR_T2M_VAR = "air_temperature_2m"                   # K (independent read, not threaded from PRECIP_TEMP_VAR)
-WSTAR_PSFC_VAR = "surface_air_pressure"                # Pa, exact variant only
-WSTAR_Q2M_VAR = "specific_humidity_2m"                 # kg/kg, exact variant only
-WSTAR_VARS = (WSTAR_H_VAR, WSTAR_ZI_VAR, WSTAR_T2M_VAR, WSTAR_PSFC_VAR, WSTAR_Q2M_VAR)
+WSTAR_VARS = (WSTAR_H_VAR, WSTAR_ZI_VAR, WSTAR_T2M_VAR)
 
-WSTAR_G = 9.81         # m/s^2
-WSTAR_CP = 1005.0      # J/(kg*K)
-WSTAR_RD = 287.05      # J/(kg*K), dry air gas constant -- exact variant's rho
-WSTAR_RHO_APPROX = 1.2  # kg/m^3, constant air density -- approx variant's rho
+WSTAR_G = 9.81          # m/s^2
+WSTAR_CP = 1005.0       # J/(kg*K)
+WSTAR_RHO_APPROX = 1.2  # kg/m^3, constant air density
 
 # ---------------------------------------------------------------------------
 # Site of interest (deferred meteogram feature — kept here for later).
