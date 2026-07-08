@@ -184,7 +184,10 @@
   </div>
 </div>
 
-<script src="static/twilight.js"></script>
+<!-- ?v= cache-buster: index.html is served fresh (Cloudflare DYNAMIC) but
+     static/*.js is edge-cached ~4h, so bump this whenever twilight.js changes
+     to force clients onto the new file instead of a stale cached one. -->
+<script src="static/twilight.js?v=2"></script>
 <script>
 const $ = id => document.getElementById(id);
 const base = $('base'), overlay = $('overlay'), slider = $('slider'), timeEl = $('time');
@@ -390,13 +393,15 @@ marker.addEventListener('pointerdown', e => {
   e.preventDefault(); e.stopPropagation();
 });
 marker.addEventListener('pointermove', e => { if (dragging) placeMarkerPixel(...stageEventToPixel(e)); });
-marker.addEventListener('pointerup', e => {
+function stopDrag(e) {   // pointerup OR pointercancel (multi-touch/palm/context-menu) -> never leave dragging stuck
   if (!dragging) return;
   dragging = false; stage.classList.remove('dragging');
   try { marker.releasePointerCapture(e.pointerId); } catch (_) {}
   justDragged = true; setTimeout(() => { justDragged = false; }, 50);
   scheduleSample();
-});
+}
+marker.addEventListener('pointerup', stopDrag);
+marker.addEventListener('pointercancel', stopDrag);
 stage.addEventListener('click', e => {
   if (justDragged || !manifest) return;
   placeMarkerPixel(...stageEventToPixel(e));
@@ -413,6 +418,7 @@ function scheduleSample() {
 async function doSample() {
   sampling = true; pendingSample = false;
   if (!lastSeries) chart.innerHTML = '<text x="12" y="20" fill="#9aa7b4" font-size="11">sampling…</text>';
+  const run = manifest.run_utc;   // detect a run handover landing mid-sample (frame URLs are run-specific)
   const g = manifest.grid, n = manifest.valid_times_utc.length;
   const col = Math.max(0, Math.min(g.nx - 1, Math.round(markerPx)));
   const row = Math.max(0, Math.min(g.ny - 1, Math.round(markerPy)));
@@ -430,6 +436,7 @@ async function doSample() {
     }
   } catch (_) { sampling = false; return; }
   sampling = false;
+  if (manifest.run_utc !== run) { doSample(); return; }   // handover mid-sample: discard the mixed pass, redo cleanly
   lastSeries = series;
   drawChart(series);
   if (pendingSample) doSample();   // marker moved while sampling -> resample at the latest spot
