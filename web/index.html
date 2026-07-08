@@ -111,7 +111,8 @@
                       border-radius:6px; padding:3px 8px; cursor:pointer; font-size:13px; }
   .meteo-hdr button:hover { background:#2d333b; }
   #chart { width:100%; height:auto; display:block; background:#0b0f14;
-           border:1px solid var(--line); border-radius:6px; }
+           border:1px solid var(--line); border-radius:6px;
+           cursor:ew-resize; touch-action:none; }
   .meteo-legend { display:flex; gap:12px; flex-wrap:wrap; font-size:11px; margin-top:6px; }
   .meteo-legend span { display:inline-flex; align-items:center; gap:5px; color:var(--muted); }
   .meteo-legend i { width:16px; height:3px; border-radius:2px; display:inline-block; }
@@ -513,8 +514,12 @@ function drawChart(series) {
       const elev = sunElevationDeg(new Date(manifest.valid_times_utc[i] + 'Z'), mlat, mlon);
       const a = meteoTwilightAlpha(elev);
       if (a <= 0) continue;   // night: no shading, plain chart background shows through
-      s += `<rect x="${bounds[i].toFixed(1)}" y="${CH.padT}" width="${(bounds[i + 1] - bounds[i]).toFixed(1)}" `
-         + `height="${CH.H - CH.padB - CH.padT}" fill="#ffffff" fill-opacity="${a}"/>`;
+      // Extend above the 100% line (y=0, not padT): curves/area-fills never
+      // draw above padT, so this keeps a sliver of shading always visible even
+      // when a curve/fill is pinned near 100% (overcast) and would otherwise
+      // sit flush with -- and visually crowd out -- the top of the band.
+      s += `<rect x="${bounds[i].toFixed(1)}" y="0" width="${(bounds[i + 1] - bounds[i]).toFixed(1)}" `
+         + `height="${CH.H - CH.padB}" fill="#ffffff" fill-opacity="${a}"/>`;
     }
   }
   for (let p = 0; p <= 100; p += 25) {   // y grid + % labels
@@ -542,7 +547,7 @@ function drawChart(series) {
   }
   for (const ser of METEO_SERIES) {   // curves on top of the fills
     const pts = series[ser.key].map((f, i) => f == null ? null : `${chX(i, n).toFixed(1)},${chY(f).toFixed(1)}`).filter(Boolean).join(' ');
-    s += `<polyline points="${pts}" fill="none" stroke="${ser.color}" stroke-width="1.6" stroke-linejoin="round"/>`;
+    s += `<polyline points="${pts}" fill="none" stroke="${ser.color}" stroke-width="1" stroke-linejoin="round"/>`;
   }
   s += `<line id="chartNow" x1="0" y1="${CH.padT}" x2="0" y2="${CH.H - CH.padB}" stroke="#3fb950" stroke-width="1.2" stroke-dasharray="3,2" opacity="0.85"/>`;
   s += `<text id="chartNowLabel" y="${CH.padT + 9}" fill="#3fb950" font-size="9">now</text>`;
@@ -604,6 +609,43 @@ setInterval(updateNowMarkers, 30000);   // keep advancing even without user inte
 function buildMeteoLegend() {
   $('meteoLegend').innerHTML = METEO_SERIES.map(s => `<span><i style="background:${s.color}"></i>${s.label}</span>`).join('');
 }
+
+// The chart itself doubles as a time slider: drag anywhere on it (not just
+// exactly on the thin red cursor line) to scrub. chX's inverse converts a
+// pointer position to the nearest frame index; createSVGPoint + the screen
+// CTM correctly accounts for the viewBox scaling regardless of rendered size.
+let chartDragging = false;
+function chartIndexFromEvent(e) {
+  if (!manifest) return null;
+  const pt = chart.createSVGPoint();
+  pt.x = e.clientX; pt.y = e.clientY;
+  const ctm = chart.getScreenCTM();
+  if (!ctm) return null;
+  const loc = pt.matrixTransform(ctm.inverse());
+  const n = manifest.valid_times_utc.length;
+  const raw = (loc.x - CH.padL) / (CH.W - CH.padL - CH.padR) * (n - 1);
+  return Math.round(Math.max(0, Math.min(n - 1, raw)));
+}
+chart.addEventListener('pointerdown', e => {
+  if (!manifest) return;
+  chartDragging = true;
+  try { chart.setPointerCapture(e.pointerId); } catch (_) {}   // never let capture failure block the scrub itself
+  const i = chartIndexFromEvent(e);
+  if (i != null) show(i);
+  e.preventDefault();
+});
+chart.addEventListener('pointermove', e => {
+  if (!chartDragging) return;
+  const i = chartIndexFromEvent(e);
+  if (i != null) show(i);
+});
+function stopChartDrag(e) {
+  if (!chartDragging) return;
+  chartDragging = false;
+  try { chart.releasePointerCapture(e.pointerId); } catch (_) {}
+}
+chart.addEventListener('pointerup', stopChartDrag);
+chart.addEventListener('pointercancel', stopChartDrag);
 
 // zoom: crop/enlarge the map so the marker sits at the CENTRE of the frame,
 // entirely client-side. translate + scale about the top-left: the marker's
