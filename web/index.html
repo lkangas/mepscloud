@@ -185,6 +185,13 @@
         </details>
         <button id="preload" title="Preload every frame for smooth scrubbing/animation">⤓ Preload</button>
         <button id="zoom" title="Zoom the map in around the marker">⤢ Zoom</button>
+        <!-- TEMPORARY: for picking which overlay/roads resolution variant to
+             actually use at 5x zoom. Remove once decided. -->
+        <select id="overlayQuality" title="Overlay/roads asset (zoom in to compare)">
+          <option value="">Overlay: current (low-res)</option>
+          <option value="A_scaled">Overlay: hi-res A (scaled width)</option>
+          <option value="B_fixed">Overlay: hi-res B (fixed width)</option>
+        </select>
       </div>
       <div id="precipLegend" class="precip-legend" hidden>
         <div class="pl-row"><span class="pl-lbl">Rain</span><span class="pl-bar pl-rain"></span><span>0–25 mm/h</span></div>
@@ -810,6 +817,13 @@ function applyZoom() {
   }
 }
 $('zoom').onclick = () => { zoomOn = !zoomOn; $('zoom').classList.toggle('active', zoomOn); applyZoom(); };
+// TEMPORARY: swap the overlay/roads image source to compare hi-res variants
+// while zoomed in, see above.
+$('overlayQuality').onchange = e => {
+  const tag = e.target.value;
+  overlay.src = tag ? `static/hires_test/overlay_${tag}.png` : 'static/overlay.png';
+  $('roads').src = tag ? `static/hires_test/roads_${tag}.png` : 'static/roads.png';
+};
 
 // point source: the dropdown picks My location / Komakallio / Räyskälä /
 // Manual, remembered in localStorage. Default is Komakallio (NO geolocation
