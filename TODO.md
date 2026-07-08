@@ -44,11 +44,16 @@ Design (confirmed live against the dataset, not guessed):
 - No fixed physical range makes sense across such heterogeneous fields
   (temperature, pressure, wind, radiation, …), unlike the main app's cloud
   fractions (0–1) or altitudes (fixed ceiling). Auto-normalise each variable
-  to **its own** min/max across the whole fetched run, alpha-encode 0–255
-  against that (white RGB, matching the existing LA-PNG display trick) — not
-  comparable in absolute terms across variables/runs, fine for exploring one
-  variable's spatial/temporal shape. A later pass could pin down real
-  physical ranges and proper colormaps (viridis, turbo, …) for variables
+  to **its own** min/max **across the whole 67-frame run** (one shared scale
+  per variable, computed once over all frames together) — explicitly NOT
+  per-frame; a per-frame scale would make brightness incomparable across
+  time (frame 40 brighter than frame 10 could just mean frame 10 had a
+  smaller local range, not a lower value). Alpha-encode 0–255 against that
+  one run-wide range (white RGB, matching the existing LA-PNG display trick)
+  — not comparable in absolute terms across different variables or runs, but
+  fine for exploring one variable's spatial/temporal shape within a run. A
+  later pass could pin down real physical ranges and proper colormaps
+  (viridis, turbo, …) for variables
   worth a closer look — explicitly deferred, not part of this first pass.
 - Viewer: everything fancy stripped out. Time slider, a product picker
   (dropdown — too many for a button row; group by `main` vs `SFX_*`), the
