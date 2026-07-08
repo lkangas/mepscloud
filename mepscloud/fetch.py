@@ -90,33 +90,51 @@ def run_meta(ds: netCDF4.Dataset):
     return x, y, valid_times
 
 
+# Timesteps read from OPeNDAP per request. Reading a whole variable's time
+# series at once (67 steps) spikes RAM badly -- the masked array + its
+# NaN-filled float32 copy + the DAP download buffer all coexist (~1.3 GB on
+# the VPS). Reading in small chunks keeps that transient tiny (a chunk's
+# float32 is ~CHUNK * ny*nx * 4 bytes) while the returned uint8 array is still
+# the full time series (~68 MB), assembled in place.
+FETCH_CHUNK = 8
+
+
+def _quantize_variable(var, quantize, pct_scale: bool) -> np.ndarray:
+    """Read one variable [t,1,ny,nx] in timestep chunks, NaN-fill, optionally
+    %->0-1, and quantize into a full uint8/uint16 [t,ny,nx] array."""
+    n_time, ny, nx = var.shape[0], var.shape[2], var.shape[3]
+    out = np.empty((n_time, ny, nx), dtype=quantize(np.zeros((1, 1), np.float32)).dtype)
+    for lo in range(0, n_time, FETCH_CHUNK):
+        hi = min(lo + FETCH_CHUNK, n_time)
+        # netCDF4 returns a MaskedArray for vars with _FillValue; np.asarray()
+        # on that silently leaks the raw fill sentinel (~9.97e36) through
+        # instead of NaN, which the quantizer would clamp into range ("fully
+        # cloudy") rather than "no data" -> 0. Fill explicitly.
+        raw = np.ma.filled(var[lo:hi, 0, :, :], np.nan).astype(np.float32)
+        if pct_scale:
+            raw /= 100.0
+        out[lo:hi] = quantize(raw)
+        del raw
+    return out
+
+
 def iter_quantized_variables(ds: netCDF4.Dataset):
     """Yield (name, quantized_array) for each cloud variable, one at a time.
 
-    This is the memory-bounding primitive the whole pipeline is built on:
-    callers (npz caching, PNG rendering) consume and discard each variable's
-    array before the next is fetched, so peak memory stays ~one variable's
-    array (~270MB raw float32 in flight, briefly) regardless of how many
-    variables or forecast hours are pulled -- instead of ~2GB for all 8 at
-    once. See module docstring.
+    The returned array is the variable's full time series (uint8 fractions /
+    uint16 metres); the heavy float32 transient is bounded to FETCH_CHUNK
+    timesteps (see _quantize_variable). Callers consume and discard each
+    variable before the next, so peak memory stays modest regardless of how
+    many variables or forecast hours are pulled.
     """
     for name in config.CLOUD_VARS_FRACTION:
         print(f"[fetch]   {name}")
         var = ds.variables[name]
-        # netCDF4 returns a MaskedArray for vars with _FillValue; np.asarray()
-        # on that silently leaks the raw fill sentinel (~9.97e36) through
-        # instead of NaN, which would then get clamped into range by the
-        # quantizer (e.g. "fully cloudy") instead of "no data" -> 0.
-        raw = np.ma.filled(var[:, 0, :, :], np.nan).astype(np.float32)
-        if str(getattr(var, "units", "")) == "%":
-            raw /= 100.0
-        yield name, _quantize_fraction(raw)
-        del raw
+        pct = str(getattr(var, "units", "")) == "%"
+        yield name, _quantize_variable(var, _quantize_fraction, pct)
     for name in config.CLOUD_VARS_METRES:
         print(f"[fetch]   {name}")
-        raw = np.ma.filled(ds.variables[name][:, 0, :, :], np.nan).astype(np.float32)
-        yield name, _quantize_metres(raw)
-        del raw
+        yield name, _quantize_variable(ds.variables[name], _quantize_metres, False)
 
 
 def fetch_latest_run(force: bool = False) -> Path:
