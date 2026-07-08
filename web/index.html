@@ -120,7 +120,9 @@
   #chart2 { width:100%; height:auto; display:block; background:#0b0f14;
             border:1px solid var(--line); border-radius:6px; margin-top:14px; }
   .meteo-legend { display:flex; gap:12px; flex-wrap:wrap; font-size:11px; margin-top:6px; }
-  .meteo-legend span { display:inline-flex; align-items:center; gap:5px; color:var(--muted); }
+  .meteo-legend label { display:inline-flex; align-items:center; gap:5px; color:var(--muted); cursor:pointer; }
+  .meteo-legend label:has(input:not(:checked)) { opacity:0.45; }
+  .meteo-legend input[type=checkbox] { margin:0; width:11px; height:11px; }
   .meteo-legend i { width:16px; height:3px; border-radius:2px; display:inline-block; }
   .meteo-note { font-size:11px; color:var(--muted); margin-top:6px; }
   #lpcRadius { width:44px; background:#21262d; color:var(--fg); border:1px solid var(--line);
@@ -453,9 +455,13 @@ const METEO_SERIES = [
   // layer is stable (H<=0, i.e. most nights). Originally shipped with a
   // second, more exact variant (real theta_v + real air density instead of
   // T2m + a constant) for comparison -- dropped after the two tracked
-  // within <1% of each other; see config.py's w* section.
-  { key: 'w_star_raw', label: 'Thermals', color: '#3ddc84' },
+  // within <1% of each other; see config.py's w* section. `hidden: true`
+  // starts it deselected in the legend -- a niche trace next to the cloud/
+  // rain basics the others there track, not something everyone wants on by
+  // default.
+  { key: 'w_star_raw', label: 'Thermals', color: '#3ddc84', hidden: true },
 ];
+METEO_SERIES.forEach(s => { s.visible = !s.hidden; });   // mutable per-trace on/off state, toggled via the legend checkboxes
 const KOMAKALLIO = [60.2415, 24.3349];   // default point / geoloc fallback
 const ZOOM_K = 5;   // locked after live comparison at several factors
 
@@ -754,7 +760,7 @@ function drawChart(series) {
   }
   const baseY = chY(0);   // faint area fill between each curve and the 0% baseline
   for (const ser of METEO_SERIES) {
-    if (ser.fill === false) continue;   // e.g. rain: a line only, no fill
+    if (ser.fill === false || !ser.visible) continue;   // e.g. rain: a line only, no fill; unchecked in the legend: no fill either
     const scale = seriesScale(ser);
     for (const idxs of meteoSegments(series[ser.key], n)) {   // one fill shape per disconnected segment
       const pts = idxs.map(i => [chX(i, n), chY(series[ser.key][i] * scale)]);
@@ -765,6 +771,7 @@ function drawChart(series) {
     }
   }
   for (const ser of METEO_SERIES) {   // curves on top of the fills, in the normal (legend) order -- rain on top
+    if (!ser.visible) continue;
     const scale = seriesScale(ser);
     for (const idxs of meteoSegments(series[ser.key], n)) {
       const pts = idxs.map(i => `${chX(i, n).toFixed(1)},${chY(series[ser.key][i] * scale).toFixed(1)}`).join(' ');
@@ -842,7 +849,15 @@ function updateNowMarkers() {
 setInterval(updateNowMarkers, 30000);   // keep advancing even without user interaction
 window.addEventListener('resize', () => { if (manifest) updateNowMarkers(); });   // keep the pixel-based slider tick correct across viewport changes
 function buildMeteoLegend() {
-  $('meteoLegend').innerHTML = METEO_SERIES.map(s => `<span><i style="background:${s.color}"></i>${s.label}</span>`).join('');
+  $('meteoLegend').innerHTML = METEO_SERIES.map((s, i) =>
+    `<label><input type="checkbox" data-idx="${i}"${s.visible ? ' checked' : ''}><i style="background:${s.color}"></i>${s.label}</label>`
+  ).join('');
+  $('meteoLegend').querySelectorAll('input[type=checkbox]').forEach(cb => {
+    cb.onchange = e => {
+      METEO_SERIES[+e.target.dataset.idx].visible = e.target.checked;
+      if (lastSeries) drawChart(lastSeries);   // redraw from already-sampled data, no resample needed
+    };
+  });
 }
 
 // ===== Line-plot-cloud experiment: a second meteogram showing every pixel
