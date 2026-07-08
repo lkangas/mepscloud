@@ -603,9 +603,22 @@ function updateNowMarkers() {
     }
   }
   const mk = $('sliderNow');
-  if (mk) { mk.hidden = false; mk.style.left = (n <= 1 ? 0 : frac / (n - 1) * 100).toFixed(2) + '%'; }
+  if (mk) {
+    mk.hidden = false;
+    // A native range thumb travels between its own radius and (width - radius),
+    // not edge-to-edge -- a plain frac*100% placed the tick too far toward the
+    // low end (matching "too early" reports for a fraction that's usually well
+    // under 50%). THUMB_R approximates that inset; not pixel-perfect across
+    // every browser's thumb rendering, but much closer than ignoring it.
+    const THUMB_R = 8;
+    const wrapW = $('sliderWrap').clientWidth;
+    const usable = Math.max(0, wrapW - THUMB_R * 2);
+    const px = THUMB_R + (n <= 1 ? 0 : frac / (n - 1)) * usable;
+    mk.style.left = px.toFixed(1) + 'px';
+  }
 }
 setInterval(updateNowMarkers, 30000);   // keep advancing even without user interaction
+window.addEventListener('resize', () => { if (manifest) updateNowMarkers(); });   // keep the pixel-based slider tick correct across viewport changes
 function buildMeteoLegend() {
   $('meteoLegend').innerHTML = METEO_SERIES.map(s => `<span><i style="background:${s.color}"></i>${s.label}</span>`).join('');
 }
