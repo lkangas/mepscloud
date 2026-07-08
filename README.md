@@ -13,7 +13,8 @@ the fetch/render pipeline.
 
 - **Source**: MET Norway THREDDS/OPeNDAP (`meps_det_sfc`), native Lambert
   grid — not FMI's resampled product (which silently truncates large
-  requests). See `mepscloud/fetch.py`.
+  requests). See `mepscloud/fetch.py`. The full `meps_det_sfc` variable list
+  (221 fields) is in [`docs/meps_det_sfc-variables.md`](docs/meps_det_sfc-variables.md).
 - **Pipeline** (`mepscloud/`): fetch the newest run's cloud variables,
   quantize, and render one PNG per layer per forecast step, plus a custom
   altitude-coloured `combined` layer. No projection at render time — the grid
