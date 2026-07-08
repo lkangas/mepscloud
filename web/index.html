@@ -117,10 +117,14 @@
   #chart { width:100%; height:auto; display:block; background:#0b0f14;
            border:1px solid var(--line); border-radius:6px;
            cursor:ew-resize; touch-action:none; }
+  #chart2 { width:100%; height:auto; display:block; background:#0b0f14;
+            border:1px solid var(--line); border-radius:6px; margin-top:14px; }
   .meteo-legend { display:flex; gap:12px; flex-wrap:wrap; font-size:11px; margin-top:6px; }
   .meteo-legend span { display:inline-flex; align-items:center; gap:5px; color:var(--muted); }
   .meteo-legend i { width:16px; height:3px; border-radius:2px; display:inline-block; }
   .meteo-note { font-size:11px; color:var(--muted); margin-top:6px; }
+  #lpcRadius { width:44px; background:#21262d; color:var(--fg); border:1px solid var(--line);
+               border-radius:6px; padding:3px 5px; font-size:12px; }
   /* stage wraps every map layer + the marker so the zoom transform (clipped by
      .frame's overflow:hidden) scales them together. No CSS transition on the
      transform: animating from `none` left it intermittently stuck at identity. */
@@ -204,7 +208,14 @@
       </div>
       <svg id="chart" viewBox="0 0 640 220" preserveAspectRatio="xMidYMid meet"></svg>
       <div class="meteo-legend" id="meteoLegend"></div>
-      <div class="meteo-note" id="meteoNote">Cloud cover, fog & rain rate (% of the max for each layer) at the marker vs forecast time. Drag the marker or click the map to move it.</div>
+      <div class="meteo-note" id="meteoNote"></div>
+      <div class="meteo-hdr" style="margin-top:14px;">
+        <span>Line-plot cloud: <span id="lpcLayerLabel">—</span></span>
+        <label style="display:flex;align-items:center;gap:4px;">
+          radius <input id="lpcRadius" type="number" min="0" max="40" step="1" value="3"> px
+        </label>
+      </div>
+      <svg id="chart2" viewBox="0 0 640 220" preserveAspectRatio="xMidYMid meet"></svg>
     </section>
     <div class="statusarea">
       <div id="status" class="status"></div>
@@ -510,7 +521,7 @@ function placeMarkerPixel(px, py, resample = true) {
   const [lat, lon] = pixelToLatLon(markerPx, markerPy, g);
   $('ptLatLon').textContent = lat.toFixed(3) + '°N, ' + lon.toFixed(3) + '°E';
   if (zoomOn && !dragging) applyZoom();   // recentre on discrete moves (click/preset/geo), not mid-drag
-  if (resample) scheduleSample();
+  if (resample) { scheduleSample(); scheduleLpcSample(); }
 }
 function placeMarkerLatLon(lat, lon) { placeMarkerPixel(...latLonToPixel(lat, lon, manifest.grid)); }
 
@@ -755,6 +766,136 @@ function buildMeteoLegend() {
   $('meteoLegend').innerHTML = METEO_SERIES.map(s => `<span><i style="background:${s.color}"></i>${s.label}</span>`).join('');
 }
 
+// ===== Line-plot-cloud experiment: a second meteogram showing every pixel
+// within a circular radius of the marker, plus their mean -- for eyeballing
+// local spatial spread of whatever raw layer is currently selected on the
+// map. Deliberately stripped down vs. the main chart: no drag-to-scrub, no
+// twilight shading -- just axis labels and the current frame's cursor.
+// Only makes sense for RAW layers (alpha = one physical quantity); the
+// "combined" altitude-coloured layer blends 4 bands into one hue, so there's
+// no single quantity to sample -- shown as unavailable when selected.
+const chart2 = $('chart2');
+let lpcRadius = 3;
+let lpcSampling = false, lpcPending = false;
+
+// Circular integer mask, radius in NATIVE GRID pixels (same units as
+// markerPx/markerPy) -- no antialiasing, a pixel is in or out.
+function circleOffsets(radius) {
+  const offs = [];
+  const r2 = radius * radius;
+  for (let dy = -radius; dy <= radius; dy++) {
+    for (let dx = -radius; dx <= radius; dx++) {
+      if (dx * dx + dy * dy <= r2) offs.push([dx, dy]);
+    }
+  }
+  return offs;
+}
+
+function scheduleLpcSample() {
+  if (markerPx == null || !manifest) return;
+  if (lpcSampling) { lpcPending = true; return; }
+  doLpcSample();
+}
+
+async function doLpcSample() {
+  lpcSampling = true; lpcPending = false;
+  const key = currentLayer;
+  $('lpcLayerLabel').textContent = LAYER_LABEL[key] || key;
+  if (key === 'combined') {
+    chart2.innerHTML = '<text x="12" y="20" fill="#9aa7b4" font-size="11">Custom layer has no single value — pick a raw layer</text>';
+    lpcSampling = false;
+    return;
+  }
+  chart2.innerHTML = '<text x="12" y="20" fill="#9aa7b4" font-size="11">sampling…</text>';
+  const run = manifest.run_utc;
+  const g = manifest.grid, n = manifest.valid_times_utc.length;
+  const col = Math.max(0, Math.min(g.nx - 1, Math.round(markerPx)));
+  const row = Math.max(0, Math.min(g.ny - 1, Math.round(markerPy)));
+  const offsets = circleOffsets(lpcRadius).filter(([dx, dy]) => {
+    const x = col + dx, y = row + dy;
+    return x >= 0 && x < g.nx && y >= 0 && y < g.ny;
+  });
+  if (offsets.length === 0) { lpcSampling = false; return; }
+
+  // Read the whole disc's bounding box in ONE getImageData call per frame
+  // (not one per pixel): draw the frame image once into a small canvas sized
+  // to the bounding box, then slice pixels out of that single buffer. Avoids
+  // radius*radius*pi * n individual getImageData calls, which get slow fast
+  // (getImageData has real per-call overhead) as the radius grows.
+  const dxs = offsets.map(o => o[0]), dys = offsets.map(o => o[1]);
+  const minDx = Math.min(...dxs, 0), maxDx = Math.max(...dxs, 0);
+  const minDy = Math.min(...dys, 0), maxDy = Math.max(...dys, 0);
+  const bw = maxDx - minDx + 1, bh = maxDy - minDy + 1;
+  const bx = col + minDx, by = row + minDy;
+  const bcanvas = document.createElement('canvas');
+  bcanvas.width = bw; bcanvas.height = bh;
+  const bctx = bcanvas.getContext('2d', { willReadFrequently: true });
+
+  const imgs = await Promise.all(Array.from({ length: n }, (_, i) => loadFrame(frameUrl(key, i)).catch(() => null)));
+  if (manifest.run_utc !== run || currentLayer !== key) { lpcSampling = false; doLpcSample(); return; }   // handover or layer switch mid-sample
+
+  const series = offsets.map(() => new Array(n).fill(null));
+  for (let i = 0; i < n; i++) {
+    if (!imgs[i]) continue;
+    bctx.clearRect(0, 0, bw, bh);
+    bctx.drawImage(imgs[i], bx, by, bw, bh, 0, 0, bw, bh);
+    const data = bctx.getImageData(0, 0, bw, bh).data;
+    for (let oi = 0; oi < offsets.length; oi++) {
+      const px = offsets[oi][0] - minDx, py = offsets[oi][1] - minDy;
+      series[oi][i] = data[(py * bw + px) * 4 + 3] / 255;
+    }
+  }
+  const mean = new Array(n).fill(null);
+  for (let i = 0; i < n; i++) {
+    let sum = 0, cnt = 0;
+    for (const s of series) { if (s[i] != null) { sum += s[i]; cnt++; } }
+    mean[i] = cnt > 0 ? sum / cnt : null;
+  }
+  lpcSampling = false;
+  drawLpcChart(series, mean);
+  if (lpcPending) doLpcSample();
+}
+
+function drawLpcChart(series, mean) {
+  const n = manifest.valid_times_utc.length;
+  let s = '';
+  for (let p = 0; p <= 100; p += 25) {   // y-axis labels only, no gridlines
+    const y = chY(p / 100);
+    s += `<text x="${CH.padL - 4}" y="${(y + 3).toFixed(1)}" fill="#6b7681" font-size="9" text-anchor="end">${p}</text>`;
+  }
+  for (let i = 0; i < n; i++) {   // x-axis labels only, no gridlines
+    const t = localHM(manifest.valid_times_utc[i]);
+    if (t.minute !== '00') continue;
+    const lbl = t.hour === '00' ? `${t.day}.${t.month}` : (t.hour === '12' ? '12' : null);
+    if (!lbl) continue;
+    const x = chX(i, n);
+    s += `<text x="${x.toFixed(1)}" y="${CH.H - 8}" fill="#6b7681" font-size="9" text-anchor="middle">${lbl}</text>`;
+  }
+  for (const px of series) {   // faint thin per-pixel lines
+    for (const idxs of meteoSegments(px, n)) {
+      const pts = idxs.map(i => `${chX(i, n).toFixed(1)},${chY(px[i]).toFixed(1)}`).join(' ');
+      s += `<polyline points="${pts}" fill="none" stroke="#8ecfff" stroke-width="0.5" stroke-opacity="0.3" stroke-linejoin="round"/>`;
+    }
+  }
+  for (const idxs of meteoSegments(mean, n)) {   // brighter mean on top, same weight as the L/M/H lines
+    const pts = idxs.map(i => `${chX(i, n).toFixed(1)},${chY(mean[i]).toFixed(1)}`).join(' ');
+    s += `<polyline points="${pts}" fill="none" stroke="#ffffff" stroke-width="1" stroke-linejoin="round"/>`;
+  }
+  s += `<line id="chart2Cursor" x1="0" y1="0" x2="0" y2="${CH.H - CH.padB}" stroke="var(--accent)" stroke-width="1" opacity="0.9"/>`;
+  chart2.innerHTML = s;
+  updateChartCursor2(idx);
+}
+function updateChartCursor2(i) {
+  const cur = document.getElementById('chart2Cursor');
+  if (!cur || !manifest) return;
+  const x = chX(i, manifest.valid_times_utc.length).toFixed(1);
+  cur.setAttribute('x1', x); cur.setAttribute('x2', x);
+}
+$('lpcRadius').onchange = e => {
+  const v = parseInt(e.target.value, 10);
+  if (Number.isFinite(v) && v >= 0) { lpcRadius = v; scheduleLpcSample(); }
+};
+
 // The chart itself doubles as a time slider: drag anywhere on it (not just
 // exactly on the thin red cursor line) to scrub. chX's inverse converts a
 // pointer position to the nearest frame index; createSVGPoint + the screen
@@ -827,7 +968,7 @@ function applyOverlayAsset() {
 const EFRY = [60.7394, 24.1039];   // Räyskälä airfield
 const PT_PRESETS = { komakallio: KOMAKALLIO, efry: EFRY };
 const PT_SOURCES = ['komakallio', 'efry', 'geo', 'manual'];
-const METEO_NOTE = 'Cloud cover, fog & rain rate (% of the max for each layer) at the marker vs forecast time. Drag the marker or click the map to move it.';
+const METEO_NOTE = '';   // idle state; #meteoNote is still used for real status (e.g. geolocation declined)
 
 function savePtSource(v) { try { localStorage.setItem('wxPtSource', v); } catch (_) {} }
 function fallbackKomakallio(msg) {
@@ -892,6 +1033,7 @@ function show(i) {
   timeEl.textContent = fmtHelsinki(validIso);
   updateTwilight(validIso);
   updateChartCursor(idx);
+  updateChartCursor2(idx);
 }
 function step(d) { show(idx + d); }
 
@@ -1031,6 +1173,7 @@ function buildLayerButtons(layers) {
       [...layerButtons.children].forEach(b => b.classList.toggle('active', b === btn));
       updateLayerLegend();
       show(idx);
+      scheduleLpcSample();   // line-plot-cloud tracks whichever raw layer is selected on the map
     };
     layerButtons.appendChild(btn);
   }
@@ -1058,7 +1201,7 @@ function applyManifest(man) {
   if (firstLoad) initMeteoMarker();                      // place default marker + geolocate, draw chart
   if (runChanged) {
     $('err').textContent = ''; resetPreload();            // cached frames were the old run
-    if (markerPx != null) scheduleSample();               // re-sample the same point from the new run
+    if (markerPx != null) { scheduleSample(); scheduleLpcSample(); }   // re-sample the same point from the new run
   }
 }
 function pollManifest() {
