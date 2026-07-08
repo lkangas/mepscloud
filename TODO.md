@@ -5,9 +5,14 @@ git history and commit messages.
 
 ## Meteogram (point time series) — next passes
 
-Shipped (see git): a draggable marker + geolocation, a plain SVG total/low/mid/
-high cloud-fraction chart via client-side pixel-readback (alpha = fraction),
-and the client-side map zoom/crop toggle. Backlog:
+Shipped (see git): draggable marker + geolocation + point-source picker
+(Komakallio/EFRY/geo/manual); a plain SVG chart (low/mid/high cloud fraction,
+fog, rain rate) via client-side pixel-readback; the chart doubles as a time
+slider; exact (root-found, not sampled) sun-elevation day/twilight/night
+shading; "now" markers on the chart and the time slider; proper gap-based
+zero-hiding (long flat-zero runs are a real break in the line, not just fewer
+points on one continuous line); the client-side map zoom, locked at 5x with
+a matching hi-res overlay/roads render. Backlog:
 
 - **"Line-plot cloud"**: read an N×N neighbourhood (~5×5 = 12.5 km to start)
   around the marker; overplot each pixel's series faintly + centre/mean bold,
@@ -16,7 +21,9 @@ and the client-side map zoom/crop toggle. Backlog:
   (already fetched, uint16 metres) plotted as the deck's vertical extent. The
   display PNG encodes metres as alpha via `ALT_DISPLAY_MAX` (~55 m steps) —
   fine for lines, or a small backend raw sidecar if more precision is wanted.
-- Sun/night shading bands and a precip trace on the meteogram.
+- Snow / freezing-rain traces on the meteogram (rain_rate's raw-layer pattern
+  extends directly — same trick, phase-filtered on the other two branches of
+  the precip classification instead of is_rain).
 
 ## (much later) Convective velocity scale w\* of the boundary layer
 
