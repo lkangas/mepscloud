@@ -20,9 +20,13 @@ services:
     volumes:
       - ..:/app
     # Bursty ~3-min render every ~3h; cap memory so a surprise can't starve
-    # other services on a shared host. Measured peak is ~742 MB (after chunking
-    # the fetch per timestep); 1g gives margin. The remaining floor is the 4
-    # combined-input arrays (low/mid/high/fog, ~272 MB) kept for the derived
-    # layer.
-    mem_limit: 1g
+    # other services on a shared host. Measured peak was ~742 MB (after
+    # chunking the fetch per timestep) before w* was added; w* streams 5 more
+    # surface variables the same FETCH_CHUNK-bounded way (see
+    # fetch.iter_wstar_frames), so the true new peak hasn't been measured on
+    # this host yet -- bumped to 1536m for headroom rather than guessing
+    # exactly, re-tighten once `docker stats` shows the real number. The
+    # remaining floor is the 4 combined-input arrays (low/mid/high/fog,
+    # ~272 MB) kept for the derived layer.
+    mem_limit: 1536m
     command: ["python", "update.py"]
