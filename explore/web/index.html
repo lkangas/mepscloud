@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MEPS product explorer</title>
+<style>
+  :root { --bg:#0d1117; --panel:#161b22; --fg:#e6edf3; --muted:#9aa7b4; --accent:#e23b3b; --line:#30363d; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  main { padding:8px; }
+  .wrap { width:100%; max-width:640px; }
+  .frame { position:relative; width:100%; border-radius:6px; overflow:hidden; background:#000; cursor:crosshair; }
+  .frame img { position:absolute; inset:0; width:100%; height:100%; display:block; }
+  .frame .spacer { width:100%; aspect-ratio:949 / 1069; }
+  #sea-layer, #land-layer { position:absolute; inset:0; }
+  #land-layer { -webkit-mask-image:url(static/landmask.png); mask-image:url(static/landmask.png);
+                -webkit-mask-size:100% 100%; mask-size:100% 100%;
+                -webkit-mask-repeat:no-repeat; mask-repeat:no-repeat; }
+  #base { image-rendering:auto; }
+  #marker { position:absolute; width:14px; height:14px; margin:-7px 0 0 -7px; border:2px solid #fff;
+            border-radius:50%; box-shadow:0 0 0 1.5px #000, 0 0 4px #000; z-index:10; pointer-events:none; }
+  #marker[hidden] { display:none; }
+  .controls { display:flex; align-items:center; gap:8px; margin-top:8px; flex-wrap:wrap; }
+  select { background:#21262d; color:var(--fg); border:1px solid var(--line); border-radius:6px;
+           padding:6px 8px; font-size:13px; max-width:100%; flex:1; min-width:200px; }
+  input[type=range] { flex:1; min-width:200px; accent-color:var(--accent); }
+  .time { font-variant-numeric:tabular-nums; min-width:150px; text-align:right; color:var(--muted); }
+  .chartinfo { margin-top:10px; font-size:12px; color:var(--fg); }
+  .chartinfo .u { color:var(--muted); }
+  #chart { width:100%; height:auto; display:block; background:#0b0f14; border:1px solid var(--line);
+           border-radius:6px; margin-top:4px; }
+  .err { color:#ff7b72; font-size:12px; margin-top:8px; }
+  .hint { color:var(--muted); font-size:12px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="wrap">
+    <div class="frame" id="frame">
+      <div class="spacer"></div>
+      <div id="sea-layer"></div>
+      <div id="land-layer"></div>
+      <img id="base" alt="product frame">
+      <img id="overlay" src="static/overlay.png" alt="coastlines">
+      <div id="marker" hidden></div>
+    </div>
+    <div class="controls">
+      <select id="product" title="MEPS product"></select>
+    </div>
+    <div class="controls">
+      <input id="slider" type="range" min="0" max="0" value="0">
+      <span class="time" id="time">—</span>
+    </div>
+    <div class="chartinfo" id="chartInfo"><span class="hint">click the map to plot a point over time</span></div>
+    <svg id="chart" viewBox="0 0 640 200" preserveAspectRatio="xMidYMid meet"></svg>
+    <div class="err" id="err"></div>
+  </div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const base = $('base'), slider = $('slider'), frame = $('frame'), marker = $('marker'), chart = $('chart');
+// Underlay colours locked to the main app's (sea 7/11, land 10/16 from that tuning).
+$('sea-layer').style.backgroundColor = '#245f92';
+$('land-layer').style.backgroundColor = '#5f7338';
+
+let manifest = null, products = {}, currentKey = null, idx = 0;
+let markerPx = null, markerPy = null, lastSeries = null;
+
+// shared decoded-frame cache (url -> Promise<Image>)
+const frameCache = new Map();
+function loadFrame(url) {
+  let p = frameCache.get(url);
+  if (!p) {
+    p = new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(); im.src = url; });
+    frameCache.set(url, p);
+  }
+  return p;
+}
+function frameUrl(key, step) {
+  return 'cache/' + manifest.frame_url_template.replace('{layer}', key).replace('{step:03d}', String(step).padStart(3, '0'));
+}
+
+function fmtHelsinki(iso) {
+  const d = new Date(iso + 'Z');
+  const p = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Helsinki', hourCycle: 'h23',
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+    .formatToParts(d).reduce((o, x) => (o[x.type] = x.value, o), {});
+  const off = Math.round((Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute) - d.getTime()) / 3600000);
+  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute} ${off === 3 ? 'EEST' : 'EET'}`;
+}
+
+function show(i) {
+  if (!manifest) return;
+  const n = manifest.valid_times_utc.length;
+  idx = (i + n) % n;
+  base.src = frameUrl(currentKey, idx);
+  slider.value = idx;
+  $('time').textContent = fmtHelsinki(manifest.valid_times_utc[idx]);
+  updateCursor();
+}
+
+// ---- click-a-point meteogram (single line) --------------------------------
+const _c = document.createElement('canvas'); _c.width = _c.height = 1;
+const _ctx = _c.getContext('2d', { willReadFrequently: true });
+let sampling = false, pending = false;
+
+frame.addEventListener('click', e => {
+  if (!manifest) return;
+  const r = frame.getBoundingClientRect(), g = manifest.grid;
+  markerPx = (e.clientX - r.left) / r.width * g.nx;
+  markerPy = (e.clientY - r.top) / r.height * g.ny;
+  marker.style.left = (markerPx / g.nx * 100) + '%';
+  marker.style.top = (markerPy / g.ny * 100) + '%';
+  marker.hidden = false;
+  scheduleSample();
+});
+
+function scheduleSample() {
+  if (markerPx == null || !manifest) return;
+  if (sampling) { pending = true; return; }
+  doSample();
+}
+async function doSample() {
+  sampling = true; pending = false;
+  const key = currentKey;
+  const g = manifest.grid, n = manifest.valid_times_utc.length;
+  const col = Math.max(0, Math.min(g.nx - 1, Math.round(markerPx)));
+  const row = Math.max(0, Math.min(g.ny - 1, Math.round(markerPy)));
+  const imgs = await Promise.all(Array.from({ length: n }, (_, i) => loadFrame(frameUrl(key, i)).catch(() => null)));
+  if (key !== currentKey) { sampling = false; doSample(); return; }   // product switched mid-sample
+  const prod = products[key];
+  const span = prod.max - prod.min;
+  const series = new Array(n).fill(null);
+  for (let i = 0; i < n; i++) {
+    if (!imgs[i]) continue;
+    _ctx.clearRect(0, 0, 1, 1);
+    _ctx.drawImage(imgs[i], col, row, 1, 1, 0, 0, 1, 1);
+    const a = _ctx.getImageData(0, 0, 1, 1).data[3];
+    if (a === 0) continue;   // 0 reserved for no-data (see quantize_auto); values are 1..255
+    series[i] = prod.min + ((a - 1) / 254) * span;   // un-normalise back to the real value
+  }
+  sampling = false;
+  lastSeries = series;
+  drawChart(series, prod);
+  if (pending) doSample();
+}
+
+const CH = { W: 640, H: 200, padL: 54, padR: 10, padT: 12, padB: 20 };
+function chX(i, n) { return CH.padL + (n <= 1 ? 0 : i / (n - 1)) * (CH.W - CH.padL - CH.padR); }
+function chY(v, lo, hi) { return hi > lo ? (CH.H - CH.padB) - (v - lo) / (hi - lo) * (CH.H - CH.padB - CH.padT)
+                                        : (CH.H - CH.padB + CH.padT) / 2; }
+function drawChart(series, prod) {
+  const n = manifest.valid_times_utc.length;
+  const vals = series.filter(v => v != null);
+  const lo = prod.min, hi = prod.max;
+  let s = '';
+  for (const [f, v] of [[0, lo], [0.5, (lo + hi) / 2], [1, hi]]) {   // y labels: min / mid / max
+    const y = (CH.H - CH.padB) - f * (CH.H - CH.padB - CH.padT);
+    s += `<line x1="${CH.padL}" y1="${y.toFixed(1)}" x2="${CH.W - CH.padR}" y2="${y.toFixed(1)}" stroke="#1e2933" stroke-width="1"/>`;
+    s += `<text x="${CH.padL - 5}" y="${(y + 3).toFixed(1)}" fill="#6b7681" font-size="9" text-anchor="end">${(+v.toPrecision(4))}</text>`;
+  }
+  for (let i = 0; i < n; i++) {   // x labels at local midnights + noons
+    const p = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', hourCycle: 'h23', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+      .formatToParts(new Date(manifest.valid_times_utc[i] + 'Z')).reduce((o, x) => (o[x.type] = x.value, o), {});
+    if (p.minute !== '00') continue;
+    const lbl = p.hour === '00' ? `${p.day}.${p.month}` : (p.hour === '12' ? '12' : null);
+    if (!lbl) continue;
+    const x = chX(i, n);
+    s += `<text x="${x.toFixed(1)}" y="${CH.H - 7}" fill="#6b7681" font-size="9" text-anchor="middle">${lbl}</text>`;
+  }
+  // single line, broken at no-data gaps
+  let seg = [];
+  const flush = () => { if (seg.length > 1) s += `<polyline points="${seg.join(' ')}" fill="none" stroke="#4aa3ff" stroke-width="1.4" stroke-linejoin="round"/>`; seg = []; };
+  for (let i = 0; i < n; i++) {
+    if (series[i] == null) { flush(); continue; }
+    seg.push(`${chX(i, n).toFixed(1)},${chY(series[i], lo, hi).toFixed(1)}`);
+  }
+  flush();
+  s += `<line id="cur" x1="0" y1="${CH.padT}" x2="0" y2="${CH.H - CH.padB}" stroke="var(--accent)" stroke-width="1" opacity="0.9"/>`;
+  chart.innerHTML = s;
+  updateCursor();
+}
+function updateCursor() {
+  const cur = $('cur'); if (!cur || !manifest) return;
+  const x = chX(idx, manifest.valid_times_utc.length).toFixed(1);
+  cur.setAttribute('x1', x); cur.setAttribute('x2', x);
+  const prod = products[currentKey];
+  const v = lastSeries ? lastSeries[idx] : null;
+  const valTxt = v == null ? (lastSeries ? 'no data' : '') : (+v.toPrecision(5)) + ' ';
+  $('chartInfo').innerHTML = `<b>${prod.label}</b> <span class="u">${prod.units ? '[' + prod.units + ']' : ''}` +
+    (prod.constant ? ' · constant' : '') + `</span>` +
+    (lastSeries ? ` &nbsp; ${valTxt}<span class="u">${v == null ? '' : (prod.units || '')} @ marker</span>` : '');
+}
+
+function buildProductPicker() {
+  const sel = $('product');
+  sel.innerHTML = '';
+  const groups = { main: 'Forecast fields', sfx: 'SURFEX tile diagnostics (SFX_*)' };
+  for (const gk of ['main', 'sfx']) {
+    const list = manifest.products.filter(p => p.group === gk);
+    if (!list.length) continue;
+    const og = document.createElement('optgroup'); og.label = `${groups[gk]} (${list.length})`;
+    for (const p of list) {
+      const o = document.createElement('option');
+      o.value = p.key;
+      o.textContent = `${p.label}${p.units ? ' [' + p.units + ']' : ''}`;
+      og.appendChild(o);
+    }
+    sel.appendChild(og);
+  }
+  sel.onchange = () => { currentKey = sel.value; lastSeries = null; show(idx); scheduleSample(); };
+}
+
+function applyManifest(man) {
+  manifest = man;
+  products = Object.fromEntries(man.products.map(p => [p.key, p]));
+  if (!man.products.length) { $('err').textContent = 'No products in manifest yet (render still running?).'; return; }
+  slider.max = man.valid_times_utc.length - 1;
+  buildProductPicker();
+  if (!currentKey || !products[currentKey]) currentKey = man.products[0].key;
+  $('product').value = currentKey;
+  idx = Math.min(idx, man.valid_times_utc.length - 1);
+  show(idx);
+  if (markerPx != null) scheduleSample();
+}
+
+slider.addEventListener('input', e => show(+e.target.value));
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowLeft') show(idx - 1);
+  if (e.key === 'ArrowRight') show(idx + 1);
+});
+
+function poll() {
+  fetch('cache/manifest.json?_=' + Date.now())
+    .then(r => r.ok ? r.json() : null)
+    .then(m => { if (m) { const before = manifest ? manifest.products.length : -1; applyManifest(m);
+                          if (m.products.length !== before) buildProductPicker(), $('product').value = currentKey; } })
+    .catch(() => {});
+}
+fetch('cache/manifest.json').then(r => { if (!r.ok) throw 0; return r.json(); }).then(applyManifest)
+  .catch(() => { $('err').textContent = 'No manifest yet — run explore/fetch_render.py first.'; });
+// keep refreshing while a render is in progress (products appear incrementally)
+setInterval(poll, 5000);
+</script>
+</body>
+</html>
