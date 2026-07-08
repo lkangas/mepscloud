@@ -87,21 +87,53 @@
   .pl-frz  { background:linear-gradient(to right,#dc88d2,#9f78ac,#914e97,#87338a,#7e1a7e,#750071); }
   .pl-snow { background:linear-gradient(to right,#19d0db,#00a8c5,#0093ba,#0080b0,#0065a7,
              #0054a1,#001789,#010071); }
+  /* --- meteogram: map + panel side by side (desktop), stacked (mobile) --- */
+  .layout { display:flex; gap:14px; flex-wrap:wrap; align-items:flex-start; }
+  .meteo { width:380px; max-width:96vw; }
+  .meteo-hdr { display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+               font-size:12px; color:var(--muted); margin-bottom:6px; }
+  .meteo-hdr .pt { color:var(--fg); font-variant-numeric:tabular-nums; }
+  .meteo-hdr button { background:#21262d; color:var(--fg); border:1px solid var(--line);
+                      border-radius:6px; padding:3px 8px; cursor:pointer; font-size:13px; }
+  .meteo-hdr button:hover { background:#2d333b; }
+  #chart { width:100%; height:auto; display:block; background:#0b0f14;
+           border:1px solid var(--line); border-radius:6px; }
+  .meteo-legend { display:flex; gap:12px; flex-wrap:wrap; font-size:11px; margin-top:6px; }
+  .meteo-legend span { display:inline-flex; align-items:center; gap:5px; color:var(--muted); }
+  .meteo-legend i { width:16px; height:3px; border-radius:2px; display:inline-block; }
+  .meteo-note { font-size:11px; color:var(--muted); margin-top:6px; }
+  /* stage wraps every map layer + the marker so the zoom transform (clipped by
+     .frame's overflow:hidden) scales them together */
+  #stage { position:absolute; inset:0; transform-origin:center center;
+           transition:transform .18s ease; }
+  #marker { position:absolute; width:18px; height:18px; margin:-9px 0 0 -9px;
+            border:2px solid #fff; border-radius:50%; background:rgba(255,255,255,.12);
+            box-shadow:0 0 0 1.5px #000, 0 0 4px #000; cursor:grab; z-index:30; display:none;
+            touch-action:none; }
+  #marker::after { content:''; position:absolute; inset:5px; border-radius:50%;
+                   background:#fff; box-shadow:0 0 0 1px #000; }
+  #stage.dragging { cursor:grabbing; }
+  #stage.dragging #marker { cursor:grabbing; }
+  .controls button.active { background:var(--accent); color:#fff; border-color:var(--accent); }
 </style>
 </head>
 <body>
 <main>
+  <div class="layout">
   <section class="map">
     <div class="frame" id="frame">
       <div class="spacer"></div>
-      <div id="sea-layer"></div>
-      <div id="land-layer"></div>
-      <img id="base" alt="cloud layer frame">
-      <img id="precip" alt="precipitation" style="display:none">
-      <svg id="twilight-shade" preserveAspectRatio="none" style="position:absolute; inset:0; width:100%; height:100%;"></svg>
-      <svg id="twilight-lines" preserveAspectRatio="none" style="position:absolute; inset:0; width:100%; height:100%;"></svg>
-      <img id="roads" src="static/roads.png" alt="Finnish roads">
-      <img id="overlay" src="static/overlay.png" alt="coastlines/borders">
+      <div id="stage">
+        <div id="sea-layer"></div>
+        <div id="land-layer"></div>
+        <img id="base" alt="cloud layer frame">
+        <img id="precip" alt="precipitation" style="display:none">
+        <svg id="twilight-shade" preserveAspectRatio="none" style="position:absolute; inset:0; width:100%; height:100%;"></svg>
+        <svg id="twilight-lines" preserveAspectRatio="none" style="position:absolute; inset:0; width:100%; height:100%;"></svg>
+        <img id="roads" src="static/roads.png" alt="Finnish roads">
+        <img id="overlay" src="static/overlay.png" alt="coastlines/borders">
+        <div id="marker" title="Drag, or click the map, to move the meteogram point"></div>
+      </div>
     </div>
     <div class="controls">
       <div id="layerButtons" class="seg"></div>
@@ -116,6 +148,7 @@
         </div>
       </details>
       <button id="preload" title="Preload every frame for smooth scrubbing/animation">⤓ Preload</button>
+      <button id="zoom" title="Zoom the map in around the marker">⤢ Zoom</button>
     </div>
     <div id="precipLegend" class="precip-legend" hidden>
       <div class="pl-row"><span class="pl-lbl">Rain</span><span class="pl-bar pl-rain"></span><span>0–25 mm/h</span></div>
@@ -132,6 +165,16 @@
     <div id="status" class="status"></div>
     <div class="err" id="err"></div>
   </section>
+  <section class="meteo" id="meteo">
+    <div class="meteo-hdr">
+      <span>Point: <span class="pt" id="ptLatLon">—</span></span>
+      <button id="geoloc" title="Use my location">📍 my location</button>
+    </div>
+    <svg id="chart" viewBox="0 0 380 220" preserveAspectRatio="xMidYMid meet"></svg>
+    <div class="meteo-legend" id="meteoLegend"></div>
+    <div class="meteo-note">Cloud cover (%) at the marker vs forecast time. Drag the marker or click the map to move it.</div>
+  </section>
+  </div>
 </main>
 
 <div id="logModal" class="modal" hidden>
@@ -260,12 +303,25 @@ function frameUrl(layer, step) {
     .replace('{step:03d}', String(step).padStart(3, '0'));
 }
 
-// Preload every frame (all layers x all steps) into the browser cache so
-// scrubbing/animation is smooth. Button text shows 0-100%. Retained image
-// refs are what actually cache the bytes; reset on a run handover.
-let preloadImgs = [];
+// Shared decoded-frame cache (url -> Promise<HTMLImageElement>). Used by both
+// the Preload button and the meteogram's pixel sampling, so neither reloads a
+// frame the other already has. Cleared on run handover (resetPreload).
+const frameCache = new Map();
+function loadFrame(url) {
+  let p = frameCache.get(url);
+  if (!p) {
+    p = new Promise((res, rej) => {
+      const img = new Image();
+      img.onload = () => res(img);
+      img.onerror = () => rej(new Error('load failed: ' + url));
+      img.src = url;
+    });
+    frameCache.set(url, p);
+  }
+  return p;
+}
 function resetPreload() {
-  preloadImgs = [];
+  frameCache.clear();
   const btn = $('preload');
   btn.disabled = false;
   btn.textContent = '⤓ Preload';
@@ -281,19 +337,176 @@ function preloadAllFrames() {
     for (let i = 0; i < n; i++) urls.push(frameUrl(manifest.precip_layer, i));
   let done = 0;
   btn.disabled = true;
-  preloadImgs = [];
   const tick = () => {
     done++;
     if (done >= urls.length) { btn.textContent = 'Preloaded ✓'; btn.disabled = false; }
     else btn.textContent = 'Preloading ' + Math.floor(done / urls.length * 100) + '%';
   };
-  for (const url of urls) {
-    const img = new Image();
-    img.onload = tick;
-    img.onerror = tick;
-    img.src = url;
-    preloadImgs.push(img);
+  for (const url of urls) loadFrame(url).then(tick, tick);
+}
+
+// ===== Meteogram: point time series via client-side pixel-readback =========
+// The raw cloud-fraction frames are LA PNGs (alpha = fraction). Project the
+// marker's lat/lon -> frame pixel (twilight.js), then read that pixel's alpha
+// across all frames of each layer. No backend involved.
+const stage = $('stage'), marker = $('marker'), chart = $('chart');
+const METEO_SERIES = [
+  { key: 'cloud_area_fraction',             label: 'Total', color: '#cbd5e1' },
+  { key: 'low_type_cloud_area_fraction',    label: 'Low',   color: '#ff9a2e' },
+  { key: 'medium_type_cloud_area_fraction', label: 'Mid',   color: '#ffe14d' },
+  { key: 'high_type_cloud_area_fraction',   label: 'High',  color: '#6cb6ff' },
+];
+const KOMAKALLIO = [60.2415, 24.3349];   // default point / geoloc fallback
+const ZOOM_K = 3;
+let markerPx = null, markerPy = null, zoomOn = false, lastSeries = null;
+
+function insideGrid(px, py) {
+  const g = manifest.grid;
+  return px >= 0 && px <= g.nx && py >= 0 && py <= g.ny;
+}
+function stageEventToPixel(e) {   // rect reflects any zoom transform, so this maps in both states
+  const r = stage.getBoundingClientRect(), g = manifest.grid;
+  return [(e.clientX - r.left) / r.width * g.nx, (e.clientY - r.top) / r.height * g.ny];
+}
+function placeMarkerPixel(px, py, resample = true) {
+  const g = manifest.grid;
+  markerPx = Math.max(0, Math.min(g.nx, px));
+  markerPy = Math.max(0, Math.min(g.ny, py));
+  marker.style.left = (markerPx / g.nx * 100) + '%';
+  marker.style.top = (markerPy / g.ny * 100) + '%';
+  marker.style.display = 'block';
+  const [lat, lon] = pixelToLatLon(markerPx, markerPy, g);
+  $('ptLatLon').textContent = lat.toFixed(3) + '°N, ' + lon.toFixed(3) + '°E';
+  if (resample) scheduleSample();
+}
+function placeMarkerLatLon(lat, lon) { placeMarkerPixel(...latLonToPixel(lat, lon, manifest.grid)); }
+
+// pointer interaction: drag the marker handle; click/tap the map to place it
+let dragging = false, justDragged = false;
+marker.addEventListener('pointerdown', e => {
+  if (!manifest) return;
+  dragging = true; stage.classList.add('dragging');
+  marker.setPointerCapture(e.pointerId);
+  e.preventDefault(); e.stopPropagation();
+});
+marker.addEventListener('pointermove', e => { if (dragging) placeMarkerPixel(...stageEventToPixel(e)); });
+marker.addEventListener('pointerup', e => {
+  if (!dragging) return;
+  dragging = false; stage.classList.remove('dragging');
+  try { marker.releasePointerCapture(e.pointerId); } catch (_) {}
+  justDragged = true; setTimeout(() => { justDragged = false; }, 50);
+  scheduleSample();
+});
+stage.addEventListener('click', e => {
+  if (justDragged || !manifest) return;
+  placeMarkerPixel(...stageEventToPixel(e));
+});
+
+// sampling (coalesced: at most one pass in flight; re-runs if the marker moved)
+const _mctx = (() => { const c = document.createElement('canvas'); c.width = c.height = 1; return c.getContext('2d', { willReadFrequently: true }); })();
+let sampling = false, pendingSample = false;
+function scheduleSample() {
+  if (markerPx == null || !manifest) return;
+  if (sampling) { pendingSample = true; return; }
+  doSample();
+}
+async function doSample() {
+  sampling = true; pendingSample = false;
+  if (!lastSeries) chart.innerHTML = '<text x="12" y="20" fill="#9aa7b4" font-size="11">sampling…</text>';
+  const g = manifest.grid, n = manifest.valid_times_utc.length;
+  const col = Math.max(0, Math.min(g.nx - 1, Math.round(markerPx)));
+  const row = Math.max(0, Math.min(g.ny - 1, Math.round(markerPy)));
+  const series = {};
+  try {
+    for (const s of METEO_SERIES) {   // load each layer's frames in parallel, then read the pixel
+      const imgs = await Promise.all(Array.from({ length: n }, (_, i) => loadFrame(frameUrl(s.key, i)).catch(() => null)));
+      const arr = series[s.key] = new Array(n).fill(null);
+      for (let i = 0; i < n; i++) {
+        if (!imgs[i]) continue;
+        _mctx.clearRect(0, 0, 1, 1);
+        _mctx.drawImage(imgs[i], col, row, 1, 1, 0, 0, 1, 1);
+        arr[i] = _mctx.getImageData(0, 0, 1, 1).data[3] / 255;
+      }
+    }
+  } catch (_) { sampling = false; return; }
+  sampling = false;
+  lastSeries = series;
+  drawChart(series);
+  if (pendingSample) doSample();   // marker moved while sampling -> resample at the latest spot
+}
+
+const CH = { W: 380, H: 220, padL: 30, padR: 8, padT: 8, padB: 22 };
+function chX(i, n) { return CH.padL + (n <= 1 ? 0 : i / (n - 1)) * (CH.W - CH.padL - CH.padR); }
+function chY(f) { return (CH.H - CH.padB) - f * (CH.H - CH.padB - CH.padT); }
+function localHM(iso) {
+  return new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', hourCycle: 'h23',
+    day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+    .formatToParts(new Date(iso + 'Z')).reduce((o, x) => (o[x.type] = x.value, o), {});
+}
+function drawChart(series) {
+  const n = manifest.valid_times_utc.length;
+  let s = '';
+  for (let p = 0; p <= 100; p += 25) {   // y grid + % labels
+    const y = chY(p / 100);
+    s += `<line x1="${CH.padL}" y1="${y.toFixed(1)}" x2="${CH.W - CH.padR}" y2="${y.toFixed(1)}" stroke="#1e2933" stroke-width="1"/>`;
+    s += `<text x="${CH.padL - 4}" y="${(y + 3).toFixed(1)}" fill="#6b7681" font-size="9" text-anchor="end">${p}</text>`;
   }
+  for (let i = 0; i < n; i++) {   // x ticks at local midnights (date) + noons (12)
+    const t = localHM(manifest.valid_times_utc[i]);
+    if (t.minute !== '00') continue;
+    const lbl = t.hour === '00' ? `${t.day}.${t.month}` : (t.hour === '12' ? '12' : null);
+    if (!lbl) continue;
+    const x = chX(i, n);
+    s += `<line x1="${x.toFixed(1)}" y1="${CH.padT}" x2="${x.toFixed(1)}" y2="${CH.H - CH.padB}" stroke="#161f28" stroke-width="1"/>`;
+    s += `<text x="${x.toFixed(1)}" y="${CH.H - 8}" fill="#6b7681" font-size="9" text-anchor="middle">${lbl}</text>`;
+  }
+  for (const ser of METEO_SERIES) {
+    const pts = series[ser.key].map((f, i) => f == null ? null : `${chX(i, n).toFixed(1)},${chY(f).toFixed(1)}`).filter(Boolean).join(' ');
+    s += `<polyline points="${pts}" fill="none" stroke="${ser.color}" stroke-width="1.6" stroke-linejoin="round"/>`;
+  }
+  s += `<line id="chartCursor" x1="0" y1="${CH.padT}" x2="0" y2="${CH.H - CH.padB}" stroke="var(--accent)" stroke-width="1" opacity="0.9"/>`;
+  chart.innerHTML = s;
+  updateChartCursor(idx);
+}
+function updateChartCursor(i) {
+  const cur = document.getElementById('chartCursor');
+  if (!cur || !manifest) return;
+  const x = chX(i, manifest.valid_times_utc.length).toFixed(1);
+  cur.setAttribute('x1', x); cur.setAttribute('x2', x);
+}
+function buildMeteoLegend() {
+  $('meteoLegend').innerHTML = METEO_SERIES.map(s => `<span><i style="background:${s.color}"></i>${s.label}</span>`).join('');
+}
+
+// zoom: crop/enlarge the map around the marker, entirely client-side (CSS transform)
+function applyZoom() {
+  if (zoomOn && markerPx != null) {
+    const g = manifest.grid;
+    stage.style.transformOrigin = `${(markerPx / g.nx * 100).toFixed(2)}% ${(markerPy / g.ny * 100).toFixed(2)}%`;
+    stage.style.transform = `scale(${ZOOM_K})`;
+    marker.style.transform = `scale(${1 / ZOOM_K})`;   // keep the marker screen-size constant
+  } else {
+    stage.style.transform = '';
+    marker.style.transform = '';
+  }
+}
+$('zoom').onclick = () => { zoomOn = !zoomOn; $('zoom').classList.toggle('active', zoomOn); applyZoom(); };
+
+// geolocation: auto on first load (silent), or via the button
+function tryGeolocate(auto) {
+  if (!navigator.geolocation) return;
+  navigator.geolocation.getCurrentPosition(pos => {
+    const [px, py] = latLonToPixel(pos.coords.latitude, pos.coords.longitude, manifest.grid);
+    if (insideGrid(px, py)) placeMarkerPixel(px, py);
+    else if (!auto) document.querySelector('.meteo-note').textContent = 'Your location is outside the forecast area.';
+  }, () => { if (!auto) document.querySelector('.meteo-note').textContent = 'Location unavailable (permission denied?).'; },
+    { timeout: 8000, maximumAge: 600000 });
+}
+$('geoloc').onclick = () => tryGeolocate(false);
+function initMeteoMarker() {
+  buildMeteoLegend();
+  placeMarkerLatLon(KOMAKALLIO[0], KOMAKALLIO[1]);   // immediate default (samples)
+  tryGeolocate(true);                                 // async: move if permitted & in-domain
 }
 
 // ISO-format the UTC valid time in Finnish local time, tagged EET/EEST.
@@ -322,6 +535,7 @@ function show(i) {
   const validIso = manifest.valid_times_utc[idx];
   timeEl.textContent = fmtHelsinki(validIso);
   updateTwilight(validIso);
+  updateChartCursor(idx);
 }
 function step(d) { show(idx + d); }
 function togglePlay() {
@@ -493,7 +707,11 @@ function applyManifest(man) {
   if (!hasPrecip) { $('showPrecip').checked = false; precip.style.display = 'none'; $('precipLegend').hidden = true; }
   idx = Math.min(idx, man.valid_times_utc.length - 1);
   show(idx);
-  if (runChanged) { $('err').textContent = ''; resetPreload(); }  // preloaded frames were the old run
+  if (firstLoad) initMeteoMarker();                      // place default marker + geolocate, draw chart
+  if (runChanged) {
+    $('err').textContent = ''; resetPreload();            // cached frames were the old run
+    if (markerPx != null) scheduleSample();               // re-sample the same point from the new run
+  }
 }
 function pollManifest() {
   fetch('cache/manifest.json?_=' + Date.now())

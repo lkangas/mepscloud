@@ -70,6 +70,17 @@ const PROJ = (() => {
       const theta = n * lon;
       return [rho * Math.sin(theta), rho0 - rho * Math.cos(theta)];
     },
+    // Inverse of forward: native x/y (metres) -> [latDeg, lonDeg]. Used by the
+    // meteogram to show the dragged marker's coordinates (F cancels, so the
+    // odd /n baked into F above doesn't matter here). n>0 since lat0>0.
+    inverse(x, y) {
+      const dy = rho0 - y;
+      const rho = Math.sqrt(x * x + dy * dy);
+      const theta = Math.atan2(x, dy);            // x = rho·sinθ, dy = rho·cosθ
+      const lonDeg = 15 + (theta / n) * RAD;       // lon0 = 15°E
+      const latDeg = (2 * Math.atan(Math.pow(R * F / rho, 1 / n)) - Math.PI / 2) * RAD;
+      return [latDeg, lonDeg];
+    },
   };
 })();
 
@@ -79,6 +90,23 @@ function toPixel(x, y, grid) {
   const px = (x - grid.x_min) / (grid.x_max - grid.x_min) * grid.nx;
   const py = (grid.y_max - y) / (grid.y_max - grid.y_min) * grid.ny;
   return [px, py];
+}
+
+// Inverse of toPixel: pixel (col,row) -> native x/y (metres).
+function fromPixel(px, py, grid) {
+  const x = grid.x_min + px / grid.nx * (grid.x_max - grid.x_min);
+  const y = grid.y_max - py / grid.ny * (grid.y_max - grid.y_min);
+  return [x, y];
+}
+
+// Convenience round-trips used by the meteogram marker.
+function latLonToPixel(latDeg, lonDeg, grid) {
+  const [x, y] = PROJ.forward(latDeg, lonDeg);
+  return toPixel(x, y, grid);
+}
+function pixelToLatLon(px, py, grid) {
+  const [x, y] = fromPixel(px, py, grid);
+  return PROJ.inverse(x, y);   // [latDeg, lonDeg]
 }
 
 // One contour's pixel-space point segments for a given UTC Date + depression
