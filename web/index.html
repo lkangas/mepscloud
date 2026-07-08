@@ -413,10 +413,13 @@ const METEO_SERIES = [
   // it's pixel-readback-able -- the display "precip" colourmap can't be
   // inverted back to a rate (its alpha only signals wet/dry; its RGB would
   // need guessing which of 3 phase LUTs a pixel came from, and the rain/snow
-  // ramps collide almost exactly in the blue/cyan region). #0189cc is the
-  // rain colourmap's own low-end blue (tools/weatherinfo_precip_palette.json,
-  // PRECIP_RAIN_STOPS[0]) -- same hue the map already uses for rain.
-  { key: 'rain_rate', label: 'Rain', color: '#0189cc', fill: false, width: 1.6 },
+  // ramps collide almost exactly in the blue/cyan region). Colour is a
+  // bright, saturated blue -- deliberately NOT the rain colourmap's own
+  // muted low-end blue (#0189cc), which nearly disappeared against the dark
+  // chart background at the thin stroke width other traces use. No area
+  // fill to lean on for visual weight, so it needs to stand on the line
+  // alone: extra-thick and high-contrast.
+  { key: 'rain_rate', label: 'Rain', color: '#29b6ff', fill: false, width: 2.4 },
 ];
 const KOMAKALLIO = [60.2415, 24.3349];   // default point / geoloc fallback
 let ZOOM_K = 3;   // TEMPORARY: mutable while we pick a fixed value via #zoomLevel; make const again once locked
@@ -579,6 +582,22 @@ async function doSample() {
 // the twilight background bands (which extend up to y=0, above padT) more
 // headroom to stay visible above a curve/fill pinned near 100% (overcast).
 const CH = { W: 640, H: 220, padL: 30, padR: 8, padT: 24, padB: 22 };
+// For long flat stretches of exact 0 (e.g. dry hours on the rain trace), drop
+// only the STRICTLY INTERIOR points -- both neighbours also 0 -- so the line
+// still renders as a flat run without hundreds of redundant collinear points.
+// Always keeps the first/last zero of each run (its neighbour is non-zero,
+// a gap/null, or the series edge), so the slope into/out of zero still draws.
+function thinFlatZeros(values) {
+  const n = values.length;
+  const keep = new Array(n).fill(true);
+  for (let i = 0; i < n; i++) {
+    if (values[i] !== 0) continue;
+    const prev = i > 0 ? values[i - 1] : undefined;
+    const next = i < n - 1 ? values[i + 1] : undefined;
+    if (prev === 0 && next === 0) keep[i] = false;
+  }
+  return keep;
+}
 function chX(i, n) { return CH.padL + (n <= 1 ? 0 : i / (n - 1)) * (CH.W - CH.padL - CH.padR); }
 function chY(f) { return (CH.H - CH.padB) - f * (CH.H - CH.padB - CH.padT); }
 function localHM(iso) {
@@ -600,24 +619,23 @@ function drawChart(series) {
          + `height="${CH.H - CH.padB}" fill="#ffffff" fill-opacity="${run.alpha}"/>`;
     }
   }
-  for (let p = 0; p <= 100; p += 25) {   // y grid + % labels
+  for (let p = 0; p <= 100; p += 25) {   // y-axis % labels (no gridline)
     const y = chY(p / 100);
-    s += `<line x1="${CH.padL}" y1="${y.toFixed(1)}" x2="${CH.W - CH.padR}" y2="${y.toFixed(1)}" stroke="#1e2933" stroke-width="1"/>`;
     s += `<text x="${CH.padL - 4}" y="${(y + 3).toFixed(1)}" fill="#6b7681" font-size="9" text-anchor="end">${p}</text>`;
   }
-  for (let i = 0; i < n; i++) {   // x ticks at local midnights (date) + noons (12)
+  for (let i = 0; i < n; i++) {   // x-axis labels at local midnights (date) + noons (12), no gridline
     const t = localHM(manifest.valid_times_utc[i]);
     if (t.minute !== '00') continue;
     const lbl = t.hour === '00' ? `${t.day}.${t.month}` : (t.hour === '12' ? '12' : null);
     if (!lbl) continue;
     const x = chX(i, n);
-    s += `<line x1="${x.toFixed(1)}" y1="${CH.padT}" x2="${x.toFixed(1)}" y2="${CH.H - CH.padB}" stroke="#161f28" stroke-width="1"/>`;
     s += `<text x="${x.toFixed(1)}" y="${CH.H - 8}" fill="#6b7681" font-size="9" text-anchor="middle">${lbl}</text>`;
   }
   const baseY = chY(0);   // faint area fill between each curve and the 0% baseline
   for (const ser of METEO_SERIES) {
     if (ser.fill === false) continue;   // e.g. rain: a line only, no fill
-    const pts = series[ser.key].map((f, i) => f == null ? null : [chX(i, n), chY(f)]).filter(Boolean);
+    const keep = thinFlatZeros(series[ser.key]);
+    const pts = series[ser.key].map((f, i) => (f == null || !keep[i]) ? null : [chX(i, n), chY(f)]).filter(Boolean);
     if (pts.length < 2) continue;
     const d = 'M' + pts.map(p => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join('L')
             + `L${pts[pts.length - 1][0].toFixed(1)},${baseY.toFixed(1)}`
@@ -625,7 +643,8 @@ function drawChart(series) {
     s += `<path d="${d}" fill="${ser.color}" fill-opacity="0.10" stroke="none"/>`;
   }
   for (const ser of METEO_SERIES) {   // curves on top of the fills
-    const pts = series[ser.key].map((f, i) => f == null ? null : `${chX(i, n).toFixed(1)},${chY(f).toFixed(1)}`).filter(Boolean).join(' ');
+    const keep = thinFlatZeros(series[ser.key]);
+    const pts = series[ser.key].map((f, i) => (f == null || !keep[i]) ? null : `${chX(i, n).toFixed(1)},${chY(f).toFixed(1)}`).filter(Boolean).join(' ');
     s += `<polyline points="${pts}" fill="none" stroke="${ser.color}" stroke-width="${ser.width || 1}" stroke-linejoin="round"/>`;
   }
   s += `<line id="chartNow" x1="0" y1="${CH.padT}" x2="0" y2="${CH.H - CH.padB}" stroke="#3fb950" stroke-width="1.2" stroke-dasharray="3,2" opacity="0.85"/>`;
