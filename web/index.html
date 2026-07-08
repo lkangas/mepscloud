@@ -581,11 +581,10 @@ async function doSample() {
 // the twilight background bands (which extend up to y=0, above padT) more
 // headroom to stay visible above a curve/fill pinned near 100% (overcast).
 const CH = { W: 640, H: 220, padL: 30, padR: 8, padT: 24, padB: 22 };
-// For long flat stretches of exact 0 (e.g. dry hours on the rain trace), drop
-// only the STRICTLY INTERIOR points -- both neighbours also 0 -- so the line
-// still renders as a flat run without hundreds of redundant collinear points.
-// Always keeps the first/last zero of each run (its neighbour is non-zero,
-// a gap/null, or the series edge), so the slope into/out of zero still draws.
+// For long flat stretches of exact 0 (e.g. dry hours on the rain trace), the
+// STRICTLY INTERIOR points -- both neighbours also 0 -- should disappear.
+// Always keeps the first/last zero of each run (its neighbour is non-zero, a
+// gap/null, or the series edge), so the slope into/out of zero still draws.
 function thinFlatZeros(values) {
   const n = values.length;
   const keep = new Array(n).fill(true);
@@ -596,6 +595,30 @@ function thinFlatZeros(values) {
     if (prev === 0 && next === 0) keep[i] = false;
   }
   return keep;
+}
+// A straight line between the two shoulder zeros of a thinned-out run would
+// still draw a flat segment across their FULL span (a line between 2 points
+// at the same height looks identical whether there were 2 or 50 collinear
+// points along it) -- thinning point COUNT alone changes nothing visually.
+// The zero run needs an actual GAP: break the line at every dropped point,
+// so the shoulder zeros end one segment / start the next, connected only to
+// their real (non-zero) neighbour, not to each other. Returns arrays of
+// indices, each with length >= 2 (twilight.js's twilightContourSegments uses
+// the same break-into-disconnected-pieces idea, for a different reason).
+function meteoSegments(values, n) {
+  const keep = thinFlatZeros(values);
+  const segments = [];
+  let current = [];
+  for (let i = 0; i < n; i++) {
+    if (values[i] == null || !keep[i]) {
+      if (current.length > 1) segments.push(current);
+      current = [];
+      continue;
+    }
+    current.push(i);
+  }
+  if (current.length > 1) segments.push(current);
+  return segments;
 }
 function chX(i, n) { return CH.padL + (n <= 1 ? 0 : i / (n - 1)) * (CH.W - CH.padL - CH.padR); }
 function chY(f) { return (CH.H - CH.padB) - f * (CH.H - CH.padB - CH.padT); }
@@ -633,27 +656,19 @@ function drawChart(series) {
   const baseY = chY(0);   // faint area fill between each curve and the 0% baseline
   for (const ser of METEO_SERIES) {
     if (ser.fill === false) continue;   // e.g. rain: a line only, no fill
-    const keep = thinFlatZeros(series[ser.key]);
-    const pts = series[ser.key].map((f, i) => (f == null || !keep[i]) ? null : [chX(i, n), chY(f)]).filter(Boolean);
-    if (pts.length < 2) continue;
-    const d = 'M' + pts.map(p => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join('L')
-            + `L${pts[pts.length - 1][0].toFixed(1)},${baseY.toFixed(1)}`
-            + `L${pts[0][0].toFixed(1)},${baseY.toFixed(1)}Z`;
-    s += `<path d="${d}" fill="${ser.color}" fill-opacity="0.10" stroke="none"/>`;
+    for (const idxs of meteoSegments(series[ser.key], n)) {   // one fill shape per disconnected segment
+      const pts = idxs.map(i => [chX(i, n), chY(series[ser.key][i])]);
+      const d = 'M' + pts.map(p => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join('L')
+              + `L${pts[pts.length - 1][0].toFixed(1)},${baseY.toFixed(1)}`
+              + `L${pts[0][0].toFixed(1)},${baseY.toFixed(1)}Z`;
+      s += `<path d="${d}" fill="${ser.color}" fill-opacity="0.10" stroke="none"/>`;
+    }
   }
-  // Curves on top of the fills. No-fill traces (rain: thick + bright, no
-  // area fill to lean on) draw FIRST/underneath here -- otherwise a series
-  // that's flat at 0% for a long stretch (rain is dry most of the time) would
-  // sit directly on the shared baseline and visually bury the filled series
-  // wherever THEY also touch 0%, making it impossible to see whether their
-  // own flat-zero thinning is working. Array.prototype.sort is stable
-  // (ES2019+), so this only moves fill:false entries earlier -- it doesn't
-  // reorder anything else (fills loop, legend, buttons all keep source order).
-  const drawOrder = [...METEO_SERIES].sort((a, b) => (a.fill === false ? 0 : 1) - (b.fill === false ? 0 : 1));
-  for (const ser of drawOrder) {
-    const keep = thinFlatZeros(series[ser.key]);
-    const pts = series[ser.key].map((f, i) => (f == null || !keep[i]) ? null : `${chX(i, n).toFixed(1)},${chY(f).toFixed(1)}`).filter(Boolean).join(' ');
-    s += `<polyline points="${pts}" fill="none" stroke="${ser.color}" stroke-width="${ser.width || 1}" stroke-linejoin="round"/>`;
+  for (const ser of METEO_SERIES) {   // curves on top of the fills, in the normal (legend) order -- rain on top
+    for (const idxs of meteoSegments(series[ser.key], n)) {
+      const pts = idxs.map(i => `${chX(i, n).toFixed(1)},${chY(series[ser.key][i]).toFixed(1)}`).join(' ');
+      s += `<polyline points="${pts}" fill="none" stroke="${ser.color}" stroke-width="${ser.width || 1}" stroke-linejoin="round"/>`;
+    }
   }
   s += `<line id="chartNow" x1="0" y1="${CH.padT}" x2="0" y2="${CH.H - CH.padB}" stroke="#3fb950" stroke-width="1.2" stroke-dasharray="3,2" opacity="0.85"/>`;
   s += `<text id="chartNowLabel" y="${CH.padT + 9}" fill="#3fb950" font-size="9">now</text>`;
