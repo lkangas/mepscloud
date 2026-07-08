@@ -99,6 +99,7 @@
           <label><input type="checkbox" id="showTwilightLines" checked> sun lines</label>
         </div>
       </details>
+      <button id="preload" title="Preload every frame for smooth scrubbing/animation">⤓ Preload</button>
     </div>
     <div class="controls">
       <button id="play" title="Play/pause">▶</button>
@@ -235,6 +236,40 @@ function frameUrl(layer, step) {
     .replace('{step:03d}', String(step).padStart(3, '0'));
 }
 
+// Preload every frame (all layers x all steps) into the browser cache so
+// scrubbing/animation is smooth. Button text shows 0-100%. Retained image
+// refs are what actually cache the bytes; reset on a run handover.
+let preloadImgs = [];
+function resetPreload() {
+  preloadImgs = [];
+  const btn = $('preload');
+  btn.disabled = false;
+  btn.textContent = '⤓ Preload';
+}
+function preloadAllFrames() {
+  if (!manifest) return;
+  const btn = $('preload');
+  const n = manifest.valid_times_utc.length;
+  const urls = [];
+  for (const layer of manifest.layers)
+    for (let i = 0; i < n; i++) urls.push(frameUrl(layer, i));
+  let done = 0;
+  btn.disabled = true;
+  preloadImgs = [];
+  const tick = () => {
+    done++;
+    if (done >= urls.length) { btn.textContent = 'Preloaded ✓'; btn.disabled = false; }
+    else btn.textContent = 'Preloading ' + Math.floor(done / urls.length * 100) + '%';
+  };
+  for (const url of urls) {
+    const img = new Image();
+    img.onload = tick;
+    img.onerror = tick;
+    img.src = url;
+    preloadImgs.push(img);
+  }
+}
+
 // ISO-format the UTC valid time in Finnish local time, tagged EET/EEST.
 // Finland is UTC+2 (EET) in winter, UTC+3 (EEST) in summer DST; derive the
 // tag from the actual offset for the given date rather than assuming.
@@ -273,6 +308,7 @@ slider.addEventListener('input', e => { if (playing) togglePlay(); show(+e.targe
 $('play').onclick = togglePlay;
 $('prev').onclick = () => { if (playing) togglePlay(); step(-1); };
 $('next').onclick = () => { if (playing) togglePlay(); step(1); };
+$('preload').onclick = preloadAllFrames;
 $('showRoads').onchange = e => { $('roads').style.display = e.target.checked ? 'block' : 'none'; };
 $('showOverlay').onchange = e => { overlay.style.display = e.target.checked ? 'block' : 'none'; };
 $('showTwilightShade').onchange = e => {
@@ -420,7 +456,7 @@ function applyManifest(man) {
   if (firstLoad || layerButtons.children.length === 0) buildLayerButtons(man.layers);
   idx = Math.min(idx, man.valid_times_utc.length - 1);
   show(idx);
-  if (runChanged) $('err').textContent = '';
+  if (runChanged) { $('err').textContent = ''; resetPreload(); }  // preloaded frames were the old run
 }
 function pollManifest() {
   fetch('cache/manifest.json?_=' + Date.now())
