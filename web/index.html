@@ -185,6 +185,12 @@
         </details>
         <button id="preload" title="Preload every frame for smooth scrubbing/animation">⤓ Preload</button>
         <button id="zoom" title="Zoom the map in around the marker">⤢ Zoom</button>
+        <!-- TEMPORARY: for picking a fixed zoom factor before building higher-res
+             underlay/overlay assets around it. Remove once locked. -->
+        <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--muted)">
+          <input id="zoomLevel" type="number" min="1.5" max="8" step="0.5" value="3"
+                 style="width:52px;background:#21262d;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:4px 6px;">x
+        </label>
       </div>
       <div id="precipLegend" class="precip-legend" hidden>
         <div class="pl-row"><span class="pl-lbl">Rain</span><span class="pl-bar pl-rain"></span><span>0–25 mm/h</span></div>
@@ -396,7 +402,7 @@ const METEO_SERIES = [
   { key: 'high_type_cloud_area_fraction',   label: 'High',  color: '#6cb6ff' },
 ];
 const KOMAKALLIO = [60.2415, 24.3349];   // default point / geoloc fallback
-const ZOOM_K = 3;
+let ZOOM_K = 3;   // TEMPORARY: mutable while we pick a fixed value via #zoomLevel; make const again once locked
 
 // Chart background: a vertical wash per time step showing day/twilight/night
 // at the marker (elevation via sunElevationDeg, twilight.js) -- independent
@@ -733,6 +739,10 @@ function applyZoom() {
   }
 }
 $('zoom').onclick = () => { zoomOn = !zoomOn; $('zoom').classList.toggle('active', zoomOn); applyZoom(); };
+$('zoomLevel').oninput = e => {   // TEMPORARY testing control, see above
+  const v = parseFloat(e.target.value);
+  if (v > 0) { ZOOM_K = v; if (zoomOn) applyZoom(); }
+};
 
 // point source: the dropdown picks My location / Komakallio / Räyskälä /
 // Manual, remembered in localStorage. Default is Komakallio (NO geolocation
