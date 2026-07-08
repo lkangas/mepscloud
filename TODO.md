@@ -53,9 +53,16 @@ zero-hiding (long flat-zero runs are a real break in the line, not just fewer
 points on one continuous line); the client-side map zoom, locked at 5x with
 a matching hi-res overlay/roads render. Backlog:
 
-- **"Line-plot cloud"**: read an N×N neighbourhood (~5×5 = 12.5 km to start)
-  around the marker; overplot each pixel's series faintly + centre/mean bold,
-  to show local spatial spread. Then refine (violin, sized balls, …).
+- **"Line-plot cloud"** — shipped as a temporary, separate second meteogram
+  (faint per-pixel lines + a brighter mean, circular radius mask, tracks
+  whichever raw layer is selected on the map). Leave the current
+  implementation as-is for now — needs more experimentation (different
+  radii, different layers, seeing what the spread actually looks like)
+  before deciding anything further. Eventually: decide whether/how some
+  aspect of it gets incorporated into the MAIN meteogram (the mean line?
+  a refined spread visualisation — violin, sized balls, …?). Once that
+  decision is made, this second temporary chart is obsolete and should be
+  removed.
 - **Cloud base & top as lines**: `cloud_base_altitude` / `cloud_top_altitude`
   (already fetched, uint16 metres) plotted as the deck's vertical extent. The
   display PNG encodes metres as alpha via `ALT_DISPLAY_MAX` (~55 m steps) —

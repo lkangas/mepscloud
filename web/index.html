@@ -157,6 +157,7 @@
           <div id="land-layer"></div>
           <img id="base" alt="cloud layer frame">
           <img id="precip" alt="precipitation" style="display:none">
+          <img id="precipContour" alt="precipitation outline" style="display:none">
           <svg id="twilight-shade" preserveAspectRatio="none" style="position:absolute; inset:0; width:100%; height:100%;"></svg>
           <svg id="twilight-lines" preserveAspectRatio="none" style="position:absolute; inset:0; width:100%; height:100%;"></svg>
           <img id="roads" src="static/roads.png" alt="Finnish roads">
@@ -181,6 +182,7 @@
           <summary>Overlays ▾</summary>
           <div class="menu-body">
             <label id="precipToggle"><input type="checkbox" id="showPrecip"> precipitation</label>
+            <label id="precipContourToggle"><input type="checkbox" id="showPrecipContour"> rain outline</label>
             <label><input type="checkbox" id="showRoads" checked> roads</label>
             <label><input type="checkbox" id="showOverlay" checked> coastlines</label>
             <label><input type="checkbox" id="showTwilightShade" checked> sun shade</label>
@@ -239,6 +241,7 @@
 const $ = id => document.getElementById(id);
 const base = $('base'), overlay = $('overlay'), slider = $('slider'), timeEl = $('time');
 const precip = $('precip');  // precipitation overlay, above clouds / below twilight
+const precipContour = $('precipContour');  // teal outline enclosing the wet area, above precip / below twilight
 const layerButtons = $('layerButtons');
 const twilightShadeSvg = $('twilight-shade');  // above clouds, below overlay
 const twilightLinesSvg = $('twilight-lines');  // above shade, below overlay
@@ -333,6 +336,7 @@ const LAYER_LABEL = {
   cloud_top_altitude: 'Cloud top altitude',
   precip: 'Precipitation (rate + phase)',
   rain_rate: 'Rain rate (raw, mm/h)',
+  precip_contour: 'Precipitation contour (wet-area outline)',
 };
 const LAYER_SHORT = {
   combined: 'Custom',
@@ -347,6 +351,7 @@ const LAYER_SHORT = {
   cloud_top_altitude: 'Top',
   precip: 'Precip',
   rain_rate: 'Rain',
+  precip_contour: 'Outline',
 };
 
 function frameUrl(layer, step) {
@@ -387,6 +392,8 @@ function preloadAllFrames() {
     for (let i = 0; i < n; i++) urls.push(frameUrl(layer, i));
   if (manifest.precip_layer)
     for (let i = 0; i < n; i++) urls.push(frameUrl(manifest.precip_layer, i));
+  if (manifest.precip_contour_layer)
+    for (let i = 0; i < n; i++) urls.push(frameUrl(manifest.precip_contour_layer, i));
   let done = 0;
   btn.disabled = true;
   const tick = () => {
@@ -1028,6 +1035,7 @@ function show(i) {
   idx = (i + n) % n;
   base.src = frameUrl(currentLayer, idx);
   if (manifest.precip_layer) precip.src = frameUrl(manifest.precip_layer, idx);
+  if (manifest.precip_contour_layer) precipContour.src = frameUrl(manifest.precip_contour_layer, idx);
   slider.value = idx;
   const validIso = manifest.valid_times_utc[idx];
   timeEl.textContent = fmtHelsinki(validIso);
@@ -1044,6 +1052,7 @@ $('showPrecip').onchange = e => {
   precip.style.display = on ? 'block' : 'none';
   $('precipLegend').hidden = !on;
 };
+$('showPrecipContour').onchange = e => { precipContour.style.display = e.target.checked ? 'block' : 'none'; };
 $('showRoads').onchange = e => { $('roads').style.display = e.target.checked ? 'block' : 'none'; };
 $('showOverlay').onchange = e => { overlay.style.display = e.target.checked ? 'block' : 'none'; };
 $('showTwilightShade').onchange = e => {
@@ -1196,6 +1205,9 @@ function applyManifest(man) {
   const hasPrecip = !!man.precip_layer;
   $('precipToggle').style.display = hasPrecip ? 'flex' : 'none';
   if (!hasPrecip) { $('showPrecip').checked = false; precip.style.display = 'none'; $('precipLegend').hidden = true; }
+  const hasPrecipContour = !!man.precip_contour_layer;
+  $('precipContourToggle').style.display = hasPrecipContour ? 'flex' : 'none';
+  if (!hasPrecipContour) { $('showPrecipContour').checked = false; precipContour.style.display = 'none'; }
   idx = Math.min(idx, man.valid_times_utc.length - 1);
   show(idx);
   if (firstLoad) initMeteoMarker();                      // place default marker + geolocate, draw chart

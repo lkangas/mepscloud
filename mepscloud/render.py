@@ -3,6 +3,9 @@ cartopy, no matplotlib, no map projection at render time (the grid is
 already a native-pixel rectangle, see config.py), and no giant combined
 array ever written to disk (see fetch.iter_quantized_variables). Just:
 quantized array -> flip north-up -> alpha=cloudiness, white RGB -> PNG.
+(The one exception is contourpy, for the precip contour outline below --
+just the contour-geometry library matplotlib's own contour() delegates to,
+not matplotlib/cartopy themselves; no plotting/rendering pulled in.)
 
 Frames are meant to sit over the land/water basemap (tools/build_basemap.py):
 clear sky is fully transparent, cloud shows as white at an opacity matching
@@ -20,9 +23,10 @@ import shutil
 import time
 from pathlib import Path
 
+import contourpy
 import netCDF4
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from . import config, fetch
 
@@ -66,7 +70,7 @@ COMBINED_INPUTS = (
 # Processing order = fetch order (raw MEPS vars), the derived combined, then
 # the precipitation overlay + its raw rain-rate layer (both derived from
 # precip rate + type, see below).
-STATUS_PRODUCTS = list(config.CLOUD_VARS) + ["combined", "precip", "rain_rate"]
+STATUS_PRODUCTS = list(config.CLOUD_VARS) + ["combined", "precip", "rain_rate", "precip_contour"]
 
 
 def _now() -> str:
@@ -377,6 +381,40 @@ def _precip_rgba(rate: np.ndarray, ptype: np.ndarray, t2m: np.ndarray) -> np.nda
     return np.flipud(rgba)
 
 
+# Same colour and line width as the coastline/border/road overlay
+# (tools/build_coastline_overlay.py's COAST_COLOR, rendered at 1px at the
+# native grid resolution -- these frames are that same resolution, no
+# upscaling, so 1 raw pixel matches it exactly, no DPI/points conversion
+# needed like the matplotlib-rendered overlay assets).
+PRECIP_CONTOUR_COLOR = "#2ec4b6"
+PRECIP_CONTOUR_WIDTH_PX = 1
+
+
+def _precip_contour_rgba(rate: np.ndarray) -> np.ndarray:
+    """One timestep's precip-contour overlay -> north-up RGBA uint8: a single
+    teal outline enclosing every nonzero-precip pixel, so faint rain stays
+    visible by its edge even where its own colourmap blends into whatever's
+    underneath (sea/cloud) -- see TODO.md. "Nonzero" = the same wet/dry
+    boundary the precip alpha fade already uses (PRECIP_DRY_LO). Traced with
+    contourpy (the library matplotlib's own contour() delegates to internally
+    -- proper iso-contour tracing, not hand-rolled boundary detection), which
+    naturally handles several disconnected rain cells (each its own path,
+    open where a wet region touches the domain edge, closed otherwise)."""
+    ny, nx = rate.shape
+    rgba = np.zeros((ny, nx, 4), dtype=np.uint8)
+    paths = contourpy.contour_generator(z=rate).lines(PRECIP_DRY_LO)
+    if paths:
+        img = Image.fromarray(rgba, mode="RGBA")
+        draw = ImageDraw.Draw(img)
+        rgb = _hex_rgb(PRECIP_CONTOUR_COLOR)
+        for path in paths:
+            if len(path) >= 2:
+                draw.line([(float(x), float(y)) for x, y in path],
+                          fill=(*rgb, 255), width=PRECIP_CONTOUR_WIDTH_PX)
+        rgba = np.asarray(img)
+    return np.flipud(rgba)
+
+
 def _rain_rate_la(rate: np.ndarray, ptype: np.ndarray, t2m: np.ndarray) -> np.ndarray:
     """One timestep of the RAW rain-rate layer -> north-up LA uint8, same
     encoding as the cloud fraction layers (alpha = quantized 0-1 fraction,
@@ -401,14 +439,17 @@ def _rain_rate_la(rate: np.ndarray, ptype: np.ndarray, t2m: np.ndarray) -> np.nd
     return np.flipud(la)
 
 
-def _write_precip_frames(ds, out_dir: Path, on_precip=None, on_rain=None) -> tuple[Path, Path]:
-    """Stream BOTH the precip overlay (display RGBA) and the raw rain-rate
-    layer straight from the open OPeNDAP dataset, in one pass over
-    fetch.iter_precip_frames (a generator -- can't be iterated twice)."""
+def _write_precip_frames(ds, out_dir: Path, on_precip=None, on_rain=None, on_contour=None) -> tuple[Path, Path, Path]:
+    """Stream the precip overlay (display RGBA), the raw rain-rate layer, and
+    the wet-area contour outline straight from the open OPeNDAP dataset, in
+    one pass over fetch.iter_precip_frames (a generator -- can't be iterated
+    twice)."""
     precip_dir = out_dir / "precip"
     precip_dir.mkdir(exist_ok=True)
     rain_dir = out_dir / "rain_rate"
     rain_dir.mkdir(exist_ok=True)
+    contour_dir = out_dir / "precip_contour"
+    contour_dir.mkdir(exist_ok=True)
     for ti, rate, ptype, t2m in fetch.iter_precip_frames(ds):
         Image.fromarray(_precip_rgba(rate, ptype, t2m), mode="RGBA").save(precip_dir / f"{ti:03d}.png")
         if on_precip:
@@ -416,15 +457,20 @@ def _write_precip_frames(ds, out_dir: Path, on_precip=None, on_rain=None) -> tup
         Image.fromarray(_rain_rate_la(rate, ptype, t2m), mode="LA").save(rain_dir / f"{ti:03d}.png")
         if on_rain:
             on_rain(ti)
-    return precip_dir, rain_dir
+        Image.fromarray(_precip_contour_rgba(rate), mode="RGBA").save(contour_dir / f"{ti:03d}.png")
+        if on_contour:
+            on_contour(ti)
+    return precip_dir, rain_dir, contour_dir
 
 
-def _write_precip_frames_arrays(rate, ptype, t2m, out_dir: Path, on_precip=None, on_rain=None) -> tuple[Path, Path]:
-    """Write both precip layers from full [t,ny,nx] arrays (local npz path)."""
+def _write_precip_frames_arrays(rate, ptype, t2m, out_dir: Path, on_precip=None, on_rain=None, on_contour=None) -> tuple[Path, Path, Path]:
+    """Write all three precip layers from full [t,ny,nx] arrays (local npz path)."""
     precip_dir = out_dir / "precip"
     precip_dir.mkdir(exist_ok=True)
     rain_dir = out_dir / "rain_rate"
     rain_dir.mkdir(exist_ok=True)
+    contour_dir = out_dir / "precip_contour"
+    contour_dir.mkdir(exist_ok=True)
     for ti in range(rate.shape[0]):
         Image.fromarray(_precip_rgba(rate[ti], ptype[ti], t2m[ti]), mode="RGBA").save(precip_dir / f"{ti:03d}.png")
         if on_precip:
@@ -432,7 +478,10 @@ def _write_precip_frames_arrays(rate, ptype, t2m, out_dir: Path, on_precip=None,
         Image.fromarray(_rain_rate_la(rate[ti], ptype[ti], t2m[ti]), mode="LA").save(rain_dir / f"{ti:03d}.png")
         if on_rain:
             on_rain(ti)
-    return precip_dir, rain_dir
+        Image.fromarray(_precip_contour_rgba(rate[ti]), mode="RGBA").save(contour_dir / f"{ti:03d}.png")
+        if on_contour:
+            on_contour(ti)
+    return precip_dir, rain_dir, contour_dir
 
 
 def _frames_dir(run_time: dt.datetime) -> Path:
@@ -462,10 +511,12 @@ def _write_manifest(run_time: dt.datetime, valid_times, x, y, layers: list[str],
                  "x_min": float(x.min()), "x_max": float(x.max()),
                  "y_min": float(y.min()), "y_max": float(y.max())},
         "layers": layers,
-        # precip is an independent overlay (its own toggle, stacked above the
-        # cloud layer), NOT one of the switchable base layers -- kept out of
-        # `layers` so it never becomes a layer button. Shares the template.
+        # precip and its contour outline are independent overlays (their own
+        # toggles, stacked above the cloud layer), NOT switchable base layers
+        # -- kept out of `layers` so neither becomes a layer button. Both
+        # share the template.
         "precip_layer": "precip" if precip else None,
+        "precip_contour_layer": "precip_contour" if precip else None,
         "frame_url_template": f"frames/{run_time:%Y%m%dT%H%MZ}/{{layer}}/{{step:03d}}.png",
     }
     (config.CACHE_DIR / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -524,21 +575,25 @@ def render_latest_run(force: bool = False) -> dict:
         print(f"[render]   combined: {len(valid_times)} frames -> {cdir}")
         combined_inputs.clear()  # free the 4 held band arrays (~272MB) before precip
 
-        # precip overlay + raw rain-rate layer: streamed straight from the
-        # still-open dataset (2 more surface vars, differenced/categorised in
-        # fetch.iter_precip_frames).
+        # precip overlay + raw rain-rate layer + contour outline: streamed
+        # straight from the still-open dataset (2 more surface vars,
+        # differenced/categorised in fetch.iter_precip_frames).
         status.mark_fetched("precip")
         status.mark_fetched("rain_rate")
+        status.mark_fetched("precip_contour")
         status.write()
-        pdir, rdir = _write_precip_frames(
+        pdir, rdir, kdir = _write_precip_frames(
             ds, out_dir,
             on_precip=lambda ti: (status.mark_processed("precip", ti), status.write_throttled()),
-            on_rain=lambda ti: (status.mark_processed("rain_rate", ti), status.write_throttled()))
+            on_rain=lambda ti: (status.mark_processed("rain_rate", ti), status.write_throttled()),
+            on_contour=lambda ti: (status.mark_processed("precip_contour", ti), status.write_throttled()))
         status.write()
         status.log_processed("precip")
         status.log_processed("rain_rate")
+        status.log_processed("precip_contour")
         print(f"[render]   precip: {len(valid_times)} frames -> {pdir}")
         print(f"[render]   rain_rate: {len(valid_times)} frames -> {rdir}")
+        print(f"[render]   precip_contour: {len(valid_times)} frames -> {kdir}")
         layers.append("rain_rate")  # a normal switchable layer, like the cloud vars above
 
         status.mark_done()
@@ -595,16 +650,20 @@ def render_from_npz(npz_path: Path, force: bool = True) -> dict:
         if has_precip:
             status.mark_fetched("precip")
             status.mark_fetched("rain_rate")
+            status.mark_fetched("precip_contour")
             status.write()
-            pdir, rdir = _write_precip_frames_arrays(
+            pdir, rdir, kdir = _write_precip_frames_arrays(
                 z["precip_rate"], z["precip_ptype"], z["precip_t2m"], out_dir,
                 on_precip=lambda ti: (status.mark_processed("precip", ti), status.write_throttled()),
-                on_rain=lambda ti: (status.mark_processed("rain_rate", ti), status.write_throttled()))
+                on_rain=lambda ti: (status.mark_processed("rain_rate", ti), status.write_throttled()),
+                on_contour=lambda ti: (status.mark_processed("precip_contour", ti), status.write_throttled()))
             status.write()
             status.log_processed("precip")
             status.log_processed("rain_rate")
+            status.log_processed("precip_contour")
             print(f"[render]   precip: {len(valid_times)} frames -> {pdir}")
             print(f"[render]   rain_rate: {len(valid_times)} frames -> {rdir}")
+            print(f"[render]   precip_contour: {len(valid_times)} frames -> {kdir}")
             layers.append("rain_rate")
 
         status.mark_done()
