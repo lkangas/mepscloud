@@ -17,6 +17,7 @@ import datetime as dt
 import json
 import os
 import shutil
+import time
 from pathlib import Path
 
 import netCDF4
@@ -63,8 +64,9 @@ COMBINED_INPUTS = (
 
 
 # Processing order = fetch order (raw MEPS vars), the derived combined, then
-# the precipitation overlay (derived from precip rate + type, see below).
-STATUS_PRODUCTS = list(config.CLOUD_VARS) + ["combined", "precip"]
+# the precipitation overlay + its raw rain-rate layer (both derived from
+# precip rate + type, see below).
+STATUS_PRODUCTS = list(config.CLOUD_VARS) + ["combined", "precip", "rain_rate"]
 
 
 def _now() -> str:
@@ -196,7 +198,19 @@ class _Status:
         p = config.CACHE_DIR / "status.json"
         tmp = p.with_name("status.json.tmp")
         tmp.write_text(json.dumps(self._doc()), encoding="utf-8")
-        os.replace(tmp, p)
+        # os.replace can transiently fail on Windows (PermissionError) if
+        # something else (OneDrive sync, an AV scanner, a local dev server)
+        # briefly holds the destination open -- this is written many times
+        # per run (write_throttled), so retry a few times with a short
+        # backoff rather than aborting the whole render over a momentary lock.
+        for attempt in range(5):
+            try:
+                os.replace(tmp, p)
+                break
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.2 * (attempt + 1))
         self._since_write = 0
 
     def write_throttled(self, every: int = 4):
@@ -328,6 +342,18 @@ def _lut_index(value: np.ndarray, vmax: float, n: int = 256) -> np.ndarray:
     return np.rint(pos * (n - 1)).astype(np.intp)
 
 
+def _precip_phase_masks(ptype: np.ndarray, t2m: np.ndarray):
+    """(is_rain, is_frz, is_snow) boolean masks from precipitation_type + the
+    fill-phase temperature fallback (see fetch.iter_precip_frames). Shared by
+    the display colourmap (_precip_rgba) and the raw rain-rate layer below."""
+    unknown = ptype < 0  # fill: not classified at the tick -> decide by temp
+    cold = np.asarray(t2m) < PRECIP_SNOW_T_K
+    is_frz = np.isin(ptype, _PRECIP_FRZ_CODES)  # freezing only from explicit model codes
+    is_snow = np.isin(ptype, _PRECIP_SNOW_CODES) | (unknown & cold)
+    is_rain = ~(is_frz | is_snow)  # known rain/drizzle, plus warm-or-unknown fallback
+    return is_rain, is_frz, is_snow
+
+
 def _precip_rgba(rate: np.ndarray, ptype: np.ndarray, t2m: np.ndarray) -> np.ndarray:
     """One timestep of the precip overlay -> north-up RGBA uint8.
     rate: float32 [ny,nx] mm/h (per-hour water-equiv). ptype: int16 [ny,nx]
@@ -336,11 +362,7 @@ def _precip_rgba(rate: np.ndarray, ptype: np.ndarray, t2m: np.ndarray) -> np.nda
     where the instantaneous type is undefined but the hour still accumulated."""
     rate = rate.astype(np.float32, copy=False)
     ny, nx = rate.shape
-    unknown = ptype < 0  # fill: not classified at the tick -> decide by temp
-    cold = np.asarray(t2m) < PRECIP_SNOW_T_K
-    is_frz = np.isin(ptype, _PRECIP_FRZ_CODES)  # freezing only from explicit model codes
-    is_snow = np.isin(ptype, _PRECIP_SNOW_CODES) | (unknown & cold)
-    is_rain = ~(is_frz | is_snow)  # known rain/drizzle, plus warm-or-unknown fallback
+    is_rain, is_frz, is_snow = _precip_phase_masks(ptype, t2m)
     rgb = np.zeros((ny, nx, 3), dtype=np.uint8)
     ir = _lut_index(rate, PRECIP_RAIN_MAX)
     rgb[is_rain] = PRECIP_RAIN_LUT[ir[is_rain]]
@@ -355,26 +377,62 @@ def _precip_rgba(rate: np.ndarray, ptype: np.ndarray, t2m: np.ndarray) -> np.nda
     return np.flipud(rgba)
 
 
-def _write_precip_frames(ds, out_dir: Path, on_frame=None) -> Path:
-    """Stream the precip overlay straight from the open OPeNDAP dataset."""
-    var_dir = out_dir / "precip"
-    var_dir.mkdir(exist_ok=True)
+def _rain_rate_la(rate: np.ndarray, ptype: np.ndarray, t2m: np.ndarray) -> np.ndarray:
+    """One timestep of the RAW rain-rate layer -> north-up LA uint8, same
+    encoding as the cloud fraction layers (alpha = quantized 0-1 fraction,
+    constant white RGB -- see _to_display_png) so it doubles as a normal
+    switchable layer button AND a meteogram pixel-readback source. This is
+    needed because the display precip colourmap (_precip_rgba) is NOT
+    invertible: its alpha only signals a wet/dry threshold (saturates at
+    PRECIP_ALPHA for any rate above PRECIP_DRY_HI, no gradation above that),
+    and its RGB colour would require guessing which of 3 phase LUTs a pixel
+    came from -- the rain and snow ramps overlap almost exactly in the blue/
+    cyan region (e.g. light rain and moderate snow can differ by an RGB
+    distance of ~1/255), so a nearest-colour inverse would misclassify real
+    values. This layer sidesteps that entirely: alpha directly IS
+    rain_rate/PRECIP_RAIN_MAX, computed from the same rate/phase data at
+    render time, no inversion needed. Zero where the phase isn't rain."""
+    is_rain, _, _ = _precip_phase_masks(ptype, t2m)
+    frac = np.where(is_rain, np.clip(rate / PRECIP_RAIN_MAX, 0.0, 1.0), 0.0)
+    alpha = np.clip(np.rint(frac * 255), 0, 255).astype(np.uint8)
+    la = np.empty((*alpha.shape, 2), dtype=np.uint8)
+    la[..., 0] = 255
+    la[..., 1] = alpha
+    return np.flipud(la)
+
+
+def _write_precip_frames(ds, out_dir: Path, on_precip=None, on_rain=None) -> tuple[Path, Path]:
+    """Stream BOTH the precip overlay (display RGBA) and the raw rain-rate
+    layer straight from the open OPeNDAP dataset, in one pass over
+    fetch.iter_precip_frames (a generator -- can't be iterated twice)."""
+    precip_dir = out_dir / "precip"
+    precip_dir.mkdir(exist_ok=True)
+    rain_dir = out_dir / "rain_rate"
+    rain_dir.mkdir(exist_ok=True)
     for ti, rate, ptype, t2m in fetch.iter_precip_frames(ds):
-        Image.fromarray(_precip_rgba(rate, ptype, t2m), mode="RGBA").save(var_dir / f"{ti:03d}.png")
-        if on_frame:
-            on_frame(ti)
-    return var_dir
+        Image.fromarray(_precip_rgba(rate, ptype, t2m), mode="RGBA").save(precip_dir / f"{ti:03d}.png")
+        if on_precip:
+            on_precip(ti)
+        Image.fromarray(_rain_rate_la(rate, ptype, t2m), mode="LA").save(rain_dir / f"{ti:03d}.png")
+        if on_rain:
+            on_rain(ti)
+    return precip_dir, rain_dir
 
 
-def _write_precip_frames_arrays(rate, ptype, t2m, out_dir: Path, on_frame=None) -> Path:
-    """Write the precip overlay from full [t,ny,nx] arrays (local npz path)."""
-    var_dir = out_dir / "precip"
-    var_dir.mkdir(exist_ok=True)
+def _write_precip_frames_arrays(rate, ptype, t2m, out_dir: Path, on_precip=None, on_rain=None) -> tuple[Path, Path]:
+    """Write both precip layers from full [t,ny,nx] arrays (local npz path)."""
+    precip_dir = out_dir / "precip"
+    precip_dir.mkdir(exist_ok=True)
+    rain_dir = out_dir / "rain_rate"
+    rain_dir.mkdir(exist_ok=True)
     for ti in range(rate.shape[0]):
-        Image.fromarray(_precip_rgba(rate[ti], ptype[ti], t2m[ti]), mode="RGBA").save(var_dir / f"{ti:03d}.png")
-        if on_frame:
-            on_frame(ti)
-    return var_dir
+        Image.fromarray(_precip_rgba(rate[ti], ptype[ti], t2m[ti]), mode="RGBA").save(precip_dir / f"{ti:03d}.png")
+        if on_precip:
+            on_precip(ti)
+        Image.fromarray(_rain_rate_la(rate[ti], ptype[ti], t2m[ti]), mode="LA").save(rain_dir / f"{ti:03d}.png")
+        if on_rain:
+            on_rain(ti)
+    return precip_dir, rain_dir
 
 
 def _frames_dir(run_time: dt.datetime) -> Path:
@@ -466,15 +524,22 @@ def render_latest_run(force: bool = False) -> dict:
         print(f"[render]   combined: {len(valid_times)} frames -> {cdir}")
         combined_inputs.clear()  # free the 4 held band arrays (~272MB) before precip
 
-        # precip overlay: streamed straight from the still-open dataset (2 more
-        # surface vars, differenced/categorised in fetch.iter_precip_frames).
+        # precip overlay + raw rain-rate layer: streamed straight from the
+        # still-open dataset (2 more surface vars, differenced/categorised in
+        # fetch.iter_precip_frames).
         status.mark_fetched("precip")
+        status.mark_fetched("rain_rate")
         status.write()
-        pdir = _write_precip_frames(ds, out_dir,
-                                    on_frame=lambda ti: (status.mark_processed("precip", ti), status.write_throttled()))
+        pdir, rdir = _write_precip_frames(
+            ds, out_dir,
+            on_precip=lambda ti: (status.mark_processed("precip", ti), status.write_throttled()),
+            on_rain=lambda ti: (status.mark_processed("rain_rate", ti), status.write_throttled()))
         status.write()
         status.log_processed("precip")
+        status.log_processed("rain_rate")
         print(f"[render]   precip: {len(valid_times)} frames -> {pdir}")
+        print(f"[render]   rain_rate: {len(valid_times)} frames -> {rdir}")
+        layers.append("rain_rate")  # a normal switchable layer, like the cloud vars above
 
         status.mark_done()
         status.write()
@@ -529,12 +594,18 @@ def render_from_npz(npz_path: Path, force: bool = True) -> dict:
         has_precip = "precip_rate" in z
         if has_precip:
             status.mark_fetched("precip")
+            status.mark_fetched("rain_rate")
             status.write()
-            pdir = _write_precip_frames_arrays(z["precip_rate"], z["precip_ptype"], z["precip_t2m"], out_dir,
-                                               on_frame=lambda ti: (status.mark_processed("precip", ti), status.write_throttled()))
+            pdir, rdir = _write_precip_frames_arrays(
+                z["precip_rate"], z["precip_ptype"], z["precip_t2m"], out_dir,
+                on_precip=lambda ti: (status.mark_processed("precip", ti), status.write_throttled()),
+                on_rain=lambda ti: (status.mark_processed("rain_rate", ti), status.write_throttled()))
             status.write()
             status.log_processed("precip")
+            status.log_processed("rain_rate")
             print(f"[render]   precip: {len(valid_times)} frames -> {pdir}")
+            print(f"[render]   rain_rate: {len(valid_times)} frames -> {rdir}")
+            layers.append("rain_rate")
 
         status.mark_done()
         status.write()

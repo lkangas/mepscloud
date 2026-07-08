@@ -210,7 +210,7 @@
       </div>
       <svg id="chart" viewBox="0 0 640 220" preserveAspectRatio="xMidYMid meet"></svg>
       <div class="meteo-legend" id="meteoLegend"></div>
-      <div class="meteo-note" id="meteoNote">Cloud cover (%) at the marker vs forecast time. Drag the marker or click the map to move it.</div>
+      <div class="meteo-note" id="meteoNote">Cloud cover, fog & rain rate (% of the max for each layer) at the marker vs forecast time. Drag the marker or click the map to move it.</div>
     </section>
     <div class="statusarea">
       <div id="status" class="status"></div>
@@ -327,6 +327,7 @@ const LAYER_LABEL = {
   cloud_base_altitude: 'Cloud base altitude',
   cloud_top_altitude: 'Cloud top altitude',
   precip: 'Precipitation (rate + phase)',
+  rain_rate: 'Rain rate (raw, mm/h)',
 };
 const LAYER_SHORT = {
   combined: 'Custom',
@@ -340,6 +341,7 @@ const LAYER_SHORT = {
   cloud_base_altitude: 'Base',
   cloud_top_altitude: 'Top',
   precip: 'Precip',
+  rain_rate: 'Rain',
 };
 
 function frameUrl(layer, step) {
@@ -400,6 +402,21 @@ const METEO_SERIES = [
   { key: 'low_type_cloud_area_fraction',    label: 'Low',   color: '#ff9a2e' },
   { key: 'medium_type_cloud_area_fraction', label: 'Mid',   color: '#ffe14d' },
   { key: 'high_type_cloud_area_fraction',   label: 'High',  color: '#6cb6ff' },
+  // #9b6bd0 matches COMBINED_LEGEND's fog colour (the "Custom" map layer's
+  // legend, and render.py's COMBINED_FOG_RGB) -- same violet everywhere fog
+  // shows up in this app. fog_area_fraction already has a raw per-frame
+  // fraction PNG (same pixel-readback path as the cloud series above), so
+  // this needed no backend change.
+  { key: 'fog_area_fraction',               label: 'Fog',   color: '#9b6bd0' },
+  // rain_rate is a RAW layer (render.py _rain_rate_la, alpha = rain-only rate
+  // / PRECIP_RAIN_MAX), added alongside the cloud fractions specifically so
+  // it's pixel-readback-able -- the display "precip" colourmap can't be
+  // inverted back to a rate (its alpha only signals wet/dry; its RGB would
+  // need guessing which of 3 phase LUTs a pixel came from, and the rain/snow
+  // ramps collide almost exactly in the blue/cyan region). #0189cc is the
+  // rain colourmap's own low-end blue (tools/weatherinfo_precip_palette.json,
+  // PRECIP_RAIN_STOPS[0]) -- same hue the map already uses for rain.
+  { key: 'rain_rate', label: 'Rain', color: '#0189cc', fill: false, width: 1.6 },
 ];
 const KOMAKALLIO = [60.2415, 24.3349];   // default point / geoloc fallback
 let ZOOM_K = 3;   // TEMPORARY: mutable while we pick a fixed value via #zoomLevel; make const again once locked
@@ -599,6 +616,7 @@ function drawChart(series) {
   }
   const baseY = chY(0);   // faint area fill between each curve and the 0% baseline
   for (const ser of METEO_SERIES) {
+    if (ser.fill === false) continue;   // e.g. rain: a line only, no fill
     const pts = series[ser.key].map((f, i) => f == null ? null : [chX(i, n), chY(f)]).filter(Boolean);
     if (pts.length < 2) continue;
     const d = 'M' + pts.map(p => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join('L')
@@ -608,7 +626,7 @@ function drawChart(series) {
   }
   for (const ser of METEO_SERIES) {   // curves on top of the fills
     const pts = series[ser.key].map((f, i) => f == null ? null : `${chX(i, n).toFixed(1)},${chY(f).toFixed(1)}`).filter(Boolean).join(' ');
-    s += `<polyline points="${pts}" fill="none" stroke="${ser.color}" stroke-width="1" stroke-linejoin="round"/>`;
+    s += `<polyline points="${pts}" fill="none" stroke="${ser.color}" stroke-width="${ser.width || 1}" stroke-linejoin="round"/>`;
   }
   s += `<line id="chartNow" x1="0" y1="${CH.padT}" x2="0" y2="${CH.H - CH.padB}" stroke="#3fb950" stroke-width="1.2" stroke-dasharray="3,2" opacity="0.85"/>`;
   s += `<text id="chartNowLabel" y="${CH.padT + 9}" fill="#3fb950" font-size="9">now</text>`;
@@ -751,7 +769,7 @@ $('zoomLevel').oninput = e => {   // TEMPORARY testing control, see above
 const EFRY = [60.7394, 24.1039];   // Räyskälä airfield
 const PT_PRESETS = { komakallio: KOMAKALLIO, efry: EFRY };
 const PT_SOURCES = ['komakallio', 'efry', 'geo', 'manual'];
-const METEO_NOTE = 'Cloud cover (%) at the marker vs forecast time. Drag the marker or click the map to move it.';
+const METEO_NOTE = 'Cloud cover, fog & rain rate (% of the max for each layer) at the marker vs forecast time. Drag the marker or click the map to move it.';
 
 function savePtSource(v) { try { localStorage.setItem('wxPtSource', v); } catch (_) {} }
 function fallbackKomakallio(msg) {
