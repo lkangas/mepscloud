@@ -412,13 +412,14 @@ const METEO_SERIES = [
   // it's pixel-readback-able -- the display "precip" colourmap can't be
   // inverted back to a rate (its alpha only signals wet/dry; its RGB would
   // need guessing which of 3 phase LUTs a pixel came from, and the rain/snow
-  // ramps collide almost exactly in the blue/cyan region). Colour is a
-  // bright, saturated blue -- deliberately NOT the rain colourmap's own
-  // muted low-end blue (#0189cc), which nearly disappeared against the dark
-  // chart background at the thin stroke width other traces use. No area
-  // fill to lean on for visual weight, so it needs to stand on the line
-  // alone: extra-thick and high-contrast.
-  { key: 'rain_rate', label: 'Rain', color: '#29b6ff', fill: false, width: 2.4 },
+  // ramps collide almost exactly in the blue/cyan region). Bright red, no
+  // area fill to lean on for visual weight, so it needs to stand on the line
+  // alone: extra-thick and high-contrast. scaleToMax rescales the DISPLAYED
+  // curve (not the underlying values) so the current run's peak rain rate
+  // reads at ~60% on the shared 0-100% axis -- real rain rates are usually a
+  // small fraction of PRECIP_RAIN_MAX (25 mm/h), so left unscaled the trace
+  // would hug the bottom of the chart even during meaningful rain.
+  { key: 'rain_rate', label: 'Rain', color: '#ff3b3b', fill: false, width: 2.4, scaleToMax: 0.6 },
 ];
 const KOMAKALLIO = [60.2415, 24.3349];   // default point / geoloc fallback
 let ZOOM_K = 3;   // TEMPORARY: mutable while we pick a fixed value via #zoomLevel; make const again once locked
@@ -620,6 +621,16 @@ function meteoSegments(values, n) {
   if (current.length > 1) segments.push(current);
   return segments;
 }
+// Display-only rescale for series with ser.scaleToMax set (e.g. rain): the
+// CURRENT run's peak value maps to that fraction of the shared 0-100% axis,
+// so a trace whose real range is a small slice of its own max (rain rate vs
+// PRECIP_RAIN_MAX) doesn't hug the bottom of the chart. Doesn't touch the
+// underlying series values, only how tall the plotted point/fill reads.
+function seriesScale(ser, values) {
+  if (!ser.scaleToMax) return 1;
+  const max = Math.max(0, ...values.filter(v => v != null));
+  return max > 0 ? ser.scaleToMax / max : 1;
+}
 function chX(i, n) { return CH.padL + (n <= 1 ? 0 : i / (n - 1)) * (CH.W - CH.padL - CH.padR); }
 function chY(f) { return (CH.H - CH.padB) - f * (CH.H - CH.padB - CH.padT); }
 function localHM(iso) {
@@ -656,8 +667,9 @@ function drawChart(series) {
   const baseY = chY(0);   // faint area fill between each curve and the 0% baseline
   for (const ser of METEO_SERIES) {
     if (ser.fill === false) continue;   // e.g. rain: a line only, no fill
+    const scale = seriesScale(ser, series[ser.key]);
     for (const idxs of meteoSegments(series[ser.key], n)) {   // one fill shape per disconnected segment
-      const pts = idxs.map(i => [chX(i, n), chY(series[ser.key][i])]);
+      const pts = idxs.map(i => [chX(i, n), chY(series[ser.key][i] * scale)]);
       const d = 'M' + pts.map(p => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join('L')
               + `L${pts[pts.length - 1][0].toFixed(1)},${baseY.toFixed(1)}`
               + `L${pts[0][0].toFixed(1)},${baseY.toFixed(1)}Z`;
@@ -665,8 +677,9 @@ function drawChart(series) {
     }
   }
   for (const ser of METEO_SERIES) {   // curves on top of the fills, in the normal (legend) order -- rain on top
+    const scale = seriesScale(ser, series[ser.key]);
     for (const idxs of meteoSegments(series[ser.key], n)) {
-      const pts = idxs.map(i => `${chX(i, n).toFixed(1)},${chY(series[ser.key][i]).toFixed(1)}`).join(' ');
+      const pts = idxs.map(i => `${chX(i, n).toFixed(1)},${chY(series[ser.key][i] * scale).toFixed(1)}`).join(' ');
       s += `<polyline points="${pts}" fill="none" stroke="${ser.color}" stroke-width="${ser.width || 1}" stroke-linejoin="round"/>`;
     }
   }
