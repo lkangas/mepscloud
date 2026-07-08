@@ -10,7 +10,7 @@
   body { margin:0; background:var(--bg); color:var(--fg);
          font:14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
   main { padding:8px; }
-  .map { width:640px; max-width:96vw; }
+  .map { width:100%; max-width:640px; }
   .frame { position:relative; width:100%; border-radius:6px; overflow:hidden; background:#000; }
   .frame img { position:absolute; inset:0; width:100%; height:100%; display:block; }
   .frame .spacer { width:100%; aspect-ratio: 949 / 1069; }
@@ -87,9 +87,22 @@
   .pl-frz  { background:linear-gradient(to right,#dc88d2,#9f78ac,#914e97,#87338a,#7e1a7e,#750071); }
   .pl-snow { background:linear-gradient(to right,#19d0db,#00a8c5,#0093ba,#0080b0,#0065a7,
              #0054a1,#001789,#010071); }
-  /* --- meteogram: map + panel side by side (desktop), stacked (mobile) --- */
-  .layout { display:flex; gap:14px; flex-wrap:wrap; align-items:flex-start; }
-  .meteo { width:380px; max-width:96vw; }
+  /* --- layout: one column on mobile/narrow in the order map -> controls ->
+     meteogram -> status/logs; two columns >=1040px with the meteogram spanning
+     the right and status back under the map on the left --- */
+  .layout { display:grid; gap:10px 14px; align-items:start;
+            grid-template-columns:minmax(0,1fr);
+            grid-template-areas:"map" "ctrl" "meteo" "status"; }
+  .layout > .map { grid-area:map; }
+  .layout > .ctrl { grid-area:ctrl; }
+  .layout > .meteo { grid-area:meteo; }
+  .layout > .statusarea { grid-area:status; }
+  @media (min-width:1040px) {
+    .layout { grid-template-columns:minmax(0,640px) 380px;
+              grid-template-areas:"map meteo" "ctrl meteo" "status meteo"; }
+  }
+  .ctrl { display:flex; flex-direction:column; gap:8px; }
+  .meteo { width:100%; max-width:96vw; }
   .meteo-hdr { display:flex; align-items:center; gap:8px; flex-wrap:wrap;
                font-size:12px; color:var(--muted); margin-bottom:6px; }
   .meteo-hdr .pt { color:var(--fg); font-variant-numeric:tabular-nums; }
@@ -103,9 +116,9 @@
   .meteo-legend i { width:16px; height:3px; border-radius:2px; display:inline-block; }
   .meteo-note { font-size:11px; color:var(--muted); margin-top:6px; }
   /* stage wraps every map layer + the marker so the zoom transform (clipped by
-     .frame's overflow:hidden) scales them together */
-  #stage { position:absolute; inset:0; transform-origin:center center;
-           transition:transform .18s ease; }
+     .frame's overflow:hidden) scales them together. No CSS transition on the
+     transform: animating from `none` left it intermittently stuck at identity. */
+  #stage { position:absolute; inset:0; transform-origin:center center; }
   #marker { position:absolute; width:18px; height:18px; margin:-9px 0 0 -9px;
             border:2px solid #fff; border-radius:50%; background:rgba(255,255,255,.12);
             box-shadow:0 0 0 1.5px #000, 0 0 4px #000; cursor:grab; z-index:30; display:none;
@@ -120,60 +133,69 @@
 <body>
 <main>
   <div class="layout">
-  <section class="map">
-    <div class="frame" id="frame">
-      <div class="spacer"></div>
-      <div id="stage">
-        <div id="sea-layer"></div>
-        <div id="land-layer"></div>
-        <img id="base" alt="cloud layer frame">
-        <img id="precip" alt="precipitation" style="display:none">
-        <svg id="twilight-shade" preserveAspectRatio="none" style="position:absolute; inset:0; width:100%; height:100%;"></svg>
-        <svg id="twilight-lines" preserveAspectRatio="none" style="position:absolute; inset:0; width:100%; height:100%;"></svg>
-        <img id="roads" src="static/roads.png" alt="Finnish roads">
-        <img id="overlay" src="static/overlay.png" alt="coastlines/borders">
-        <div id="marker" title="Drag, or click the map, to move the meteogram point"></div>
+    <section class="map">
+      <div class="frame" id="frame">
+        <div class="spacer"></div>
+        <div id="stage">
+          <div id="sea-layer"></div>
+          <div id="land-layer"></div>
+          <img id="base" alt="cloud layer frame">
+          <img id="precip" alt="precipitation" style="display:none">
+          <svg id="twilight-shade" preserveAspectRatio="none" style="position:absolute; inset:0; width:100%; height:100%;"></svg>
+          <svg id="twilight-lines" preserveAspectRatio="none" style="position:absolute; inset:0; width:100%; height:100%;"></svg>
+          <img id="roads" src="static/roads.png" alt="Finnish roads">
+          <img id="overlay" src="static/overlay.png" alt="coastlines/borders">
+          <div id="marker" title="Drag, or click the map, to move the meteogram point"></div>
+        </div>
+      </div>
+    </section>
+    <div class="ctrl">
+      <div class="controls">
+        <div id="layerButtons" class="seg"></div>
+        <details class="menu">
+          <summary>Overlays ▾</summary>
+          <div class="menu-body">
+            <label id="precipToggle"><input type="checkbox" id="showPrecip"> precipitation</label>
+            <label><input type="checkbox" id="showRoads" checked> roads</label>
+            <label><input type="checkbox" id="showOverlay" checked> coastlines</label>
+            <label><input type="checkbox" id="showTwilightShade" checked> sun shade</label>
+            <label><input type="checkbox" id="showTwilightLines" checked> sun lines</label>
+          </div>
+        </details>
+        <button id="preload" title="Preload every frame for smooth scrubbing/animation">⤓ Preload</button>
+        <button id="zoom" title="Zoom the map in around the marker">⤢ Zoom</button>
+      </div>
+      <div id="precipLegend" class="precip-legend" hidden>
+        <div class="pl-row"><span class="pl-lbl">Rain</span><span class="pl-bar pl-rain"></span><span>0–25 mm/h</span></div>
+        <div class="pl-row"><span class="pl-lbl">Frz</span><span class="pl-bar pl-frz"></span><span>0–5 mm/h</span></div>
+        <div class="pl-row"><span class="pl-lbl">Snow</span><span class="pl-bar pl-snow"></span><span>0–15 cm/h</span></div>
+      </div>
+      <div class="controls">
+        <button id="play" title="Play/pause">▶</button>
+        <button id="prev" title="Previous (←)">⟨</button>
+        <button id="next" title="Next (→)">⟩</button>
+        <input id="slider" type="range" min="0" max="0" value="0">
+        <span class="timelabel" id="time">—</span>
       </div>
     </div>
-    <div class="controls">
-      <div id="layerButtons" class="seg"></div>
-      <details class="menu">
-        <summary>Overlays ▾</summary>
-        <div class="menu-body">
-          <label id="precipToggle"><input type="checkbox" id="showPrecip"> precipitation</label>
-          <label><input type="checkbox" id="showRoads" checked> roads</label>
-          <label><input type="checkbox" id="showOverlay" checked> coastlines</label>
-          <label><input type="checkbox" id="showTwilightShade" checked> sun shade</label>
-          <label><input type="checkbox" id="showTwilightLines" checked> sun lines</label>
-        </div>
-      </details>
-      <button id="preload" title="Preload every frame for smooth scrubbing/animation">⤓ Preload</button>
-      <button id="zoom" title="Zoom the map in around the marker">⤢ Zoom</button>
+    <section class="meteo" id="meteo">
+      <div class="meteo-hdr">
+        <span>Point: <span class="pt" id="ptLatLon">—</span></span>
+        <select id="ptSource" title="Where the meteogram point comes from">
+          <option value="komakallio">Komakallio</option>
+          <option value="efry">Räyskälä (EFRY)</option>
+          <option value="geo">My location</option>
+          <option value="manual">Manual (drag)</option>
+        </select>
+      </div>
+      <svg id="chart" viewBox="0 0 380 220" preserveAspectRatio="xMidYMid meet"></svg>
+      <div class="meteo-legend" id="meteoLegend"></div>
+      <div class="meteo-note" id="meteoNote">Cloud cover (%) at the marker vs forecast time. Drag the marker or click the map to move it.</div>
+    </section>
+    <div class="statusarea">
+      <div id="status" class="status"></div>
+      <div class="err" id="err"></div>
     </div>
-    <div id="precipLegend" class="precip-legend" hidden>
-      <div class="pl-row"><span class="pl-lbl">Rain</span><span class="pl-bar pl-rain"></span><span>0–25 mm/h</span></div>
-      <div class="pl-row"><span class="pl-lbl">Frz</span><span class="pl-bar pl-frz"></span><span>0–5 mm/h</span></div>
-      <div class="pl-row"><span class="pl-lbl">Snow</span><span class="pl-bar pl-snow"></span><span>0–15 cm/h</span></div>
-    </div>
-    <div class="controls">
-      <button id="play" title="Play/pause">▶</button>
-      <button id="prev" title="Previous (←)">⟨</button>
-      <button id="next" title="Next (→)">⟩</button>
-      <input id="slider" type="range" min="0" max="0" value="0">
-      <span class="timelabel" id="time">—</span>
-    </div>
-    <div id="status" class="status"></div>
-    <div class="err" id="err"></div>
-  </section>
-  <section class="meteo" id="meteo">
-    <div class="meteo-hdr">
-      <span>Point: <span class="pt" id="ptLatLon">—</span></span>
-      <button id="geoloc" title="Use my location">📍 my location</button>
-    </div>
-    <svg id="chart" viewBox="0 0 380 220" preserveAspectRatio="xMidYMid meet"></svg>
-    <div class="meteo-legend" id="meteoLegend"></div>
-    <div class="meteo-note">Cloud cover (%) at the marker vs forecast time. Drag the marker or click the map to move it.</div>
-  </section>
   </div>
 </main>
 
@@ -380,6 +402,7 @@ function placeMarkerPixel(px, py, resample = true) {
   marker.style.display = 'block';
   const [lat, lon] = pixelToLatLon(markerPx, markerPy, g);
   $('ptLatLon').textContent = lat.toFixed(3) + '°N, ' + lon.toFixed(3) + '°E';
+  if (zoomOn && !dragging) applyZoom();   // recentre on discrete moves (click/preset/geo), not mid-drag
   if (resample) scheduleSample();
 }
 function placeMarkerLatLon(lat, lon) { placeMarkerPixel(...latLonToPixel(lat, lon, manifest.grid)); }
@@ -392,13 +415,16 @@ marker.addEventListener('pointerdown', e => {
   marker.setPointerCapture(e.pointerId);
   e.preventDefault(); e.stopPropagation();
 });
-marker.addEventListener('pointermove', e => { if (dragging) placeMarkerPixel(...stageEventToPixel(e)); });
+// move the pin live during a drag, but DON'T resample (sampling reads 4x67
+// frames -- far too heavy to run on every pointermove); resample on release.
+marker.addEventListener('pointermove', e => { if (dragging) placeMarkerPixel(...stageEventToPixel(e), false); });
 function stopDrag(e) {   // pointerup OR pointercancel (multi-touch/palm/context-menu) -> never leave dragging stuck
   if (!dragging) return;
   dragging = false; stage.classList.remove('dragging');
   try { marker.releasePointerCapture(e.pointerId); } catch (_) {}
   justDragged = true; setTimeout(() => { justDragged = false; }, 50);
-  scheduleSample();
+  if (zoomOn) applyZoom();   // recentre the zoom on the marker's final position
+  scheduleSample();          // resample only now that the drag has ended
 }
 marker.addEventListener('pointerup', stopDrag);
 marker.addEventListener('pointercancel', stopDrag);
@@ -467,7 +493,16 @@ function drawChart(series) {
     s += `<line x1="${x.toFixed(1)}" y1="${CH.padT}" x2="${x.toFixed(1)}" y2="${CH.H - CH.padB}" stroke="#161f28" stroke-width="1"/>`;
     s += `<text x="${x.toFixed(1)}" y="${CH.H - 8}" fill="#6b7681" font-size="9" text-anchor="middle">${lbl}</text>`;
   }
+  const baseY = chY(0);   // faint area fill between each curve and the 0% baseline
   for (const ser of METEO_SERIES) {
+    const pts = series[ser.key].map((f, i) => f == null ? null : [chX(i, n), chY(f)]).filter(Boolean);
+    if (pts.length < 2) continue;
+    const d = 'M' + pts.map(p => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join('L')
+            + `L${pts[pts.length - 1][0].toFixed(1)},${baseY.toFixed(1)}`
+            + `L${pts[0][0].toFixed(1)},${baseY.toFixed(1)}Z`;
+    s += `<path d="${d}" fill="${ser.color}" fill-opacity="0.10" stroke="none"/>`;
+  }
+  for (const ser of METEO_SERIES) {   // curves on top of the fills
     const pts = series[ser.key].map((f, i) => f == null ? null : `${chX(i, n).toFixed(1)},${chY(f).toFixed(1)}`).filter(Boolean).join(' ');
     s += `<polyline points="${pts}" fill="none" stroke="${ser.color}" stroke-width="1.6" stroke-linejoin="round"/>`;
   }
@@ -485,35 +520,68 @@ function buildMeteoLegend() {
   $('meteoLegend').innerHTML = METEO_SERIES.map(s => `<span><i style="background:${s.color}"></i>${s.label}</span>`).join('');
 }
 
-// zoom: crop/enlarge the map around the marker, entirely client-side (CSS transform)
+// zoom: crop/enlarge the map so the marker sits at the CENTRE of the frame,
+// entirely client-side. translate + scale about the top-left: the marker's
+// frame-fraction (mx,my) maps to (0.5,0.5) after scaling by K.
 function applyZoom() {
   if (zoomOn && markerPx != null) {
     const g = manifest.grid;
-    stage.style.transformOrigin = `${(markerPx / g.nx * 100).toFixed(2)}% ${(markerPy / g.ny * 100).toFixed(2)}%`;
-    stage.style.transform = `scale(${ZOOM_K})`;
+    const mx = markerPx / g.nx, my = markerPy / g.ny;
+    const tx = (0.5 - ZOOM_K * mx) * 100, ty = (0.5 - ZOOM_K * my) * 100;
+    stage.style.transformOrigin = '0 0';
+    stage.style.transform = `translate(${tx.toFixed(3)}%, ${ty.toFixed(3)}%) scale(${ZOOM_K})`;
     marker.style.transform = `scale(${1 / ZOOM_K})`;   // keep the marker screen-size constant
   } else {
     stage.style.transform = '';
+    stage.style.transformOrigin = '';
     marker.style.transform = '';
   }
 }
 $('zoom').onclick = () => { zoomOn = !zoomOn; $('zoom').classList.toggle('active', zoomOn); applyZoom(); };
 
-// geolocation: auto on first load (silent), or via the button
-function tryGeolocate(auto) {
-  if (!navigator.geolocation) return;
-  navigator.geolocation.getCurrentPosition(pos => {
-    const [px, py] = latLonToPixel(pos.coords.latitude, pos.coords.longitude, manifest.grid);
-    if (insideGrid(px, py)) placeMarkerPixel(px, py);
-    else if (!auto) document.querySelector('.meteo-note').textContent = 'Your location is outside the forecast area.';
-  }, () => { if (!auto) document.querySelector('.meteo-note').textContent = 'Location unavailable (permission denied?).'; },
-    { timeout: 8000, maximumAge: 600000 });
+// point source: the dropdown picks My location / Komakallio / Räyskälä /
+// Manual, remembered in localStorage. Default is Komakallio (NO geolocation
+// prompt on load); geolocation only fires when explicitly chosen, and a
+// declined or out-of-domain location falls back to Komakallio.
+const EFRY = [60.7394, 24.1039];   // Räyskälä airfield
+const PT_PRESETS = { komakallio: KOMAKALLIO, efry: EFRY };
+const PT_SOURCES = ['komakallio', 'efry', 'geo', 'manual'];
+const METEO_NOTE = 'Cloud cover (%) at the marker vs forecast time. Drag the marker or click the map to move it.';
+
+function savePtSource(v) { try { localStorage.setItem('wxPtSource', v); } catch (_) {} }
+function fallbackKomakallio(msg) {
+  $('meteoNote').textContent = msg;
+  $('ptSource').value = 'komakallio'; savePtSource('komakallio');
+  placeMarkerLatLon(KOMAKALLIO[0], KOMAKALLIO[1]);
 }
-$('geoloc').onclick = () => tryGeolocate(false);
+function applyPtSource(val, persist = true) {
+  if (persist) savePtSource(val);
+  $('meteoNote').textContent = METEO_NOTE;
+  if (val === 'geo') {
+    if (!navigator.geolocation) return fallbackKomakallio('Geolocation not available — using Komakallio.');
+    navigator.geolocation.getCurrentPosition(
+      pos => {
+        const [px, py] = latLonToPixel(pos.coords.latitude, pos.coords.longitude, manifest.grid);
+        if (insideGrid(px, py)) placeMarkerPixel(px, py);
+        else fallbackKomakallio('Location is outside the forecast area — using Komakallio.');
+      },
+      () => fallbackKomakallio('Location declined — using Komakallio.'),
+      { timeout: 8000, maximumAge: 600000 });
+  } else if (val === 'manual') {
+    if (markerPx == null) placeMarkerLatLon(KOMAKALLIO[0], KOMAKALLIO[1]);   // ensure a point exists to drag
+  } else {
+    const p = PT_PRESETS[val] || KOMAKALLIO;
+    placeMarkerLatLon(p[0], p[1]);
+  }
+}
+$('ptSource').onchange = e => applyPtSource(e.target.value);
 function initMeteoMarker() {
   buildMeteoLegend();
-  placeMarkerLatLon(KOMAKALLIO[0], KOMAKALLIO[1]);   // immediate default (samples)
-  tryGeolocate(true);                                 // async: move if permitted & in-domain
+  let src = 'komakallio';
+  try { src = localStorage.getItem('wxPtSource') || 'komakallio'; } catch (_) {}
+  if (!PT_SOURCES.includes(src)) src = 'komakallio';
+  $('ptSource').value = src;
+  applyPtSource(src, false);   // apply the remembered source; don't re-persist on load
 }
 
 // ISO-format the UTC valid time in Finnish local time, tagged EET/EEST.
