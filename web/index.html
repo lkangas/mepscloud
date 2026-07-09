@@ -1319,13 +1319,26 @@ function buildLayerButtons(layers) {
   rainBtn.id = 'rainToggleBtn';
   rainBtn.textContent = LAYER_SHORT.rain_rate;
   rainBtn.title = LAYER_LABEL.precip;
-  rainBtn.onclick = () => {
-    const on = !rainBtn.classList.contains('active');
-    rainBtn.classList.toggle('active', on);
-    precip.style.display = on ? 'block' : 'none';
-    $('precipLegend').hidden = !on;
-  };
+  rainBtn.onclick = () => setRainActive(!rainBtn.classList.contains('active'));
   layerButtons.appendChild(rainBtn);
+}
+
+// Rain outline follows Rain's on/off state: enabled by default whenever Rain
+// turns on (and hidden whenever Rain turns off), but the user can still
+// uncheck it independently while Rain stays on -- see showPrecipContour's own
+// onchange handler, untouched below.
+function setRainActive(on) {
+  const rainBtn = $('rainToggleBtn');
+  if (rainBtn) rainBtn.classList.toggle('active', on);
+  precip.style.display = on ? 'block' : 'none';
+  $('precipLegend').hidden = !on;
+  if (on && manifest && manifest.precip_contour_layer) {
+    $('showPrecipContour').checked = true;
+    precipContour.style.display = 'block';
+  } else if (!on) {
+    $('showPrecipContour').checked = false;
+    precipContour.style.display = 'none';
+  }
 }
 
 // applyManifest (re)initialises the map for a run. Called on load and again
@@ -1344,7 +1357,7 @@ function applyManifest(man) {
   const hasPrecip = !!man.precip_layer;
   const rainBtn = $('rainToggleBtn');
   if (rainBtn) rainBtn.style.display = hasPrecip ? '' : 'none';
-  if (!hasPrecip) { rainBtn?.classList.remove('active'); precip.style.display = 'none'; $('precipLegend').hidden = true; }
+  if (!hasPrecip) setRainActive(false);
   const hasPrecipContour = !!man.precip_contour_layer;
   $('precipContourToggle').style.display = hasPrecipContour ? 'flex' : 'none';
   if (!hasPrecipContour) { $('showPrecipContour').checked = false; precipContour.style.display = 'none'; }
