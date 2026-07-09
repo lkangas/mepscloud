@@ -196,7 +196,6 @@
         <details class="menu">
           <summary>Overlays ▾</summary>
           <div class="menu-body">
-            <label id="precipToggle"><input type="checkbox" id="showPrecip"> precipitation</label>
             <label id="precipContourToggle"><input type="checkbox" id="showPrecipContour"> rain outline</label>
             <label><input type="checkbox" id="showRoads" checked> roads</label>
             <label><input type="checkbox" id="showOverlay" checked> coastlines</label>
@@ -1154,11 +1153,6 @@ function step(d) { show(idx + d); }
 
 slider.addEventListener('input', e => show(+e.target.value));
 $('preload').onclick = preloadAllFrames;
-$('showPrecip').onchange = e => {
-  const on = e.target.checked;
-  precip.style.display = on ? 'block' : 'none';
-  $('precipLegend').hidden = !on;
-};
 $('showPrecipContour').onchange = e => { precipContour.style.display = e.target.checked ? 'block' : 'none'; };
 $('showRoads').onchange = e => { $('roads').style.display = e.target.checked ? 'block' : 'none'; };
 $('showOverlay').onchange = e => { overlay.style.display = e.target.checked ? 'block' : 'none'; };
@@ -1293,9 +1287,14 @@ setInterval(pollStatus, 2000);
 pollStatus();
 
 function buildLayerButtons(layers) {
-  currentLayer = layers[0];
+  // rain_rate is meteogram-only pixel-readback data (see METEO_SERIES above)
+  // -- as a map layer it's just an alpha-encoded rate with no phase/shape,
+  // useless to look at. Excluded from the exclusive map-layer picks below;
+  // the Rain button appended after them controls the precip overlay instead.
+  const mapLayers = layers.filter(l => l !== 'rain_rate');
+  currentLayer = mapLayers[0];
   layerButtons.innerHTML = '';
-  for (const layer of layers) {
+  for (const layer of mapLayers) {
     const btn = document.createElement('button');
     btn.textContent = LAYER_SHORT[layer] || layer;
     btn.title = LAYER_LABEL[layer] || layer;
@@ -1303,7 +1302,7 @@ function buildLayerButtons(layers) {
     if (layer === currentLayer) btn.classList.add('active');
     btn.onclick = () => {
       currentLayer = layer;
-      [...layerButtons.children].forEach(b => b.classList.toggle('active', b === btn));
+      [...layerButtons.children].forEach(b => { if (b !== rainBtn) b.classList.toggle('active', b === btn); });
       updateLayerLegend();
       show(idx);
       scheduleLpcSample();   // line-plot-cloud tracks whichever raw layer is selected on the map
@@ -1311,6 +1310,22 @@ function buildLayerButtons(layers) {
     layerButtons.appendChild(btn);
   }
   updateLayerLegend();
+
+  // Rain: unlike the buttons above, this isn't an exclusive map-layer pick --
+  // it toggles the colored precipitation overlay (img#precip) on/off, same
+  // job the old "precipitation" checkbox did (moved here so it sits with the
+  // other layer choices instead of buried in the overlay menu).
+  const rainBtn = document.createElement('button');
+  rainBtn.id = 'rainToggleBtn';
+  rainBtn.textContent = LAYER_SHORT.rain_rate;
+  rainBtn.title = LAYER_LABEL.precip;
+  rainBtn.onclick = () => {
+    const on = !rainBtn.classList.contains('active');
+    rainBtn.classList.toggle('active', on);
+    precip.style.display = on ? 'block' : 'none';
+    $('precipLegend').hidden = !on;
+  };
+  layerButtons.appendChild(rainBtn);
 }
 
 // applyManifest (re)initialises the map for a run. Called on load and again
@@ -1324,11 +1339,12 @@ function applyManifest(man) {
   updateNowMarkers();   // slider "now" tick doesn't need the chart, just valid_times
   initTwilightSvg(man.grid);
   if (firstLoad || layerButtons.children.length === 0) buildLayerButtons(man.layers);
-  // precip overlay availability: hide the toggle (and force it off) if this
-  // run has no precip frames; otherwise keep the user's current on/off choice.
+  // precip overlay availability: hide the Rain toggle (and force it off) if
+  // this run has no precip frames; otherwise keep the user's current on/off choice.
   const hasPrecip = !!man.precip_layer;
-  $('precipToggle').style.display = hasPrecip ? 'flex' : 'none';
-  if (!hasPrecip) { $('showPrecip').checked = false; precip.style.display = 'none'; $('precipLegend').hidden = true; }
+  const rainBtn = $('rainToggleBtn');
+  if (rainBtn) rainBtn.style.display = hasPrecip ? '' : 'none';
+  if (!hasPrecip) { rainBtn?.classList.remove('active'); precip.style.display = 'none'; $('precipLegend').hidden = true; }
   const hasPrecipContour = !!man.precip_contour_layer;
   $('precipContourToggle').style.display = hasPrecipContour ? 'flex' : 'none';
   if (!hasPrecipContour) { $('showPrecipContour').checked = false; precipContour.style.display = 'none'; }
