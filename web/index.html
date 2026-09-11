@@ -250,7 +250,7 @@
 <!-- ?v= cache-buster: index.html is served fresh (Cloudflare DYNAMIC) but
      static/*.js is edge-cached ~4h, so bump this whenever twilight.js changes
      to force clients onto the new file instead of a stale cached one. -->
-<script src="static/twilight.js?v=3"></script>
+<script src="static/twilight.js?v=4"></script>
 <script>
 const $ = id => document.getElementById(id);
 const base = $('base'), overlay = $('overlay'), slider = $('slider'), timeEl = $('time');
@@ -330,8 +330,11 @@ function updateTwilight(validTimeIso) {
   const grid = manifest.grid;
   const rectD = rectPathD(grid.nx, grid.ny);
   for (const band of TWILIGHT_BANDS) {
-    const loop = twilightFillLoop(when, band.depression, grid);
-    $('twi-fill-' + band.depression).setAttribute('d', rectD + ' ' + loopToPathD(loop));
+    // `inverted` = the dark region is the loop's own interior rather than
+    // "viewport minus loop" -- see twilightFillLoop's WHICH SIDE IS DARK.
+    const { pts, inverted } = twilightFillLoop(when, band.depression, grid);
+    const loopD = loopToPathD(pts);
+    $('twi-fill-' + band.depression).setAttribute('d', inverted ? loopD : rectD + ' ' + loopD);
     const segments = twilightContourSegments(when, band.depression, grid);
     $('twi-line-' + band.depression).setAttribute('d', segmentsToPathD(segments));
   }

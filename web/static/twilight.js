@@ -132,7 +132,7 @@ function pixelToLatLon(px, py, grid) {
 // viewport edge (looks like the contour "runs off the side"). Instead we
 // break into a new segment wherever consecutive points jump implausibly
 // far, so only the genuinely continuous, in-view parts of the curve draw.
-function twilightContourSegments(date, depressionDeg, grid, nSamples = 180) {
+function twilightContourSegments(date, depressionDeg, grid, nSamples = 720) {
   const sub = subsolarPoint(date);
   const radius = 90 + depressionDeg;
   const maxJumpPx = 2 * Math.max(grid.nx, grid.ny); // discontinuity threshold
@@ -161,17 +161,34 @@ function twilightContourSegments(date, depressionDeg, grid, nSamples = 180) {
 }
 
 // Full (unbroken, clamped) loop for FILLING rather than stroking: the
-// "beyond this depression" disk boundary, as one closed point list. Used
-// with fill-rule=evenodd against the viewport rectangle (see index.html)
-// so the browser's own rasterizer computes "inside viewport but outside
-// this disk" = the dark region, without hand-rolled polygon clipping.
-// Points near the Lambert projection's high-distortion region (see
+// "beyond this depression" disk boundary, as one closed point list, plus
+// an `inverted` flag saying which side of it the dark region is on (see
+// below). Points near the Lambert projection's high-distortion region (see
 // twilightContourSegments) are clamped to a large-but-finite value rather
 // than broken into segments -- evenodd only cares about crossings near the
 // (tiny, by comparison) viewport, so a coarse clamp far outside it doesn't
 // affect correctness there, and a clamped-but-closed loop is what evenodd
 // fill needs.
-function twilightFillLoop(date, depressionDeg, grid, nSamples = 180) {
+//
+// WHICH SIDE IS DARK. This projection sends the SOUTH pole to infinity
+// (rho -> inf as lat -> -90), so the plane's point at infinity IS the south
+// pole, and whichever of the two regions contains it is the one that
+// projects to the unbounded side of the loop:
+//
+//   south pole dark (outside the lit disk)  -> dark side is the unbounded
+//     one: "inside the viewport but outside the loop" is the fill, i.e.
+//     viewport-rect XOR loop under fill-rule=evenodd.
+//   south pole still lit at this depression -> the LIT disk is what reaches
+//     infinity, and the dark region is the bounded one: the fill is the
+//     loop's own interior, with NO viewport rect.
+//
+// Getting this backwards fills exactly the complement -- shading the sunlit
+// half and leaving the night half clear. It bites often: elevation at the
+// south pole is just -subsolarLat, so it is still lit at depression d
+// whenever subsolarLat < d -- for the -18 deg band that is every day
+// outside mid-May..late-July, and around the equinoxes it is true of three
+// of the four bands at once.
+function twilightFillLoop(date, depressionDeg, grid, nSamples = 720) {
   const sub = subsolarPoint(date);
   const radius = 90 + depressionDeg;
   const CLAMP = 1e6;
@@ -187,5 +204,8 @@ function twilightFillLoop(date, depressionDeg, grid, nSamples = 180) {
     py = Math.max(-CLAMP, Math.min(CLAMP, py));
     pts.push([px, py]);
   }
-  return pts;
+  // Sun elevation at the south pole is just -subsolarLat, but going through
+  // sunElevationDeg keeps the test readable as what it means.
+  const inverted = sunElevationDeg(date, -90, 0) > -depressionDeg;
+  return { pts, inverted };
 }
